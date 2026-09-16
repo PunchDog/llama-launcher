@@ -1,0 +1,43 @@
+appId: com.llama.launcher
+productName: llama-launcher
+directories:
+  output: release
+  buildResources: resources
+
+win:
+  target:
+    - target: dir
+      arch: [x64]
+
+linux:
+  target:
+    - target: dir
+      arch: [x64]
+  category: Utility
+
+asar: false
+
+# extraResources 放到 resources/ 子目录（打包后路径）
+extraResources:
+  - from: core/
+    to: core/
+  - from: downloads/
+    to: downloads/
+  - from: config.json
+    to: config.json
+
+# 使用反向排除：打包除 Go 源码外的所有文件
+# electron-builder 会自动从 package.json 识别并打包 dependencies
+files:
+  - "**/*"
+  # 排除无关文件
+  - "!tests/**"
+  - "!scripts/**"
+  - "!.workbuddy/**"
+  - "!.git/**"
+  - "!release/**"
+  - "!dist/**"
+  - "!_*/**"
+
+npmRebuild: false
+nodeGypRebuild: false
