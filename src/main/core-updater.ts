@@ -38,43 +38,51 @@ export function CheckCoreExists(): boolean {
 
 export function GetLocalVersion(): string {
   if (!CheckCoreExists()) return '未安装';
-  try {
-    const exePath = getServerExePath();
-    const coreDir = path.dirname(exePath);
 
-    // 非 Windows：需要把 core 目录加入 LD_LIBRARY_PATH，
-    // 否则 llama-server 找不到同目录的 .so 库文件
-    const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-    if (process.platform !== 'win32') {
-      env.LD_LIBRARY_PATH = env.LD_LIBRARY_PATH
-        ? `${coreDir}:${env.LD_LIBRARY_PATH}`
-        : coreDir;
-    }
+  const exePath = getServerExePath();
+  const coreDir = path.dirname(exePath);
 
-    // llama.cpp 把版本号输出到 stderr；用 spawnSync 直接收 stderr，
-    // 不依赖 shell 的 2>&1 重定向，也不会因非零退出码抛异常
-    const result = spawnSync(exePath, ['--version'], {
-      timeout: 5000,
-      encoding: 'utf-8',
-      cwd: coreDir,
-      env,
-      windowsHide: true,
-    });
-
-    // 优先 stderr（llama.cpp 惯例），其次 stdout
-    const raw = (result.stderr || result.stdout || '').trim();
-    if (!raw) {
-      const code = result.error ? result.error.message : `exit=${result.status}`;
-      console.error('[GetLocalVersion] 无输出:', code);
-      return '未知';
-    }
-    const firstLine = raw.split(/\r?\n/)[0];
-    return firstLine || '未知';
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error('[GetLocalVersion] failed:', msg);
-    return '未知';
+  // 非 Windows：需要把 core 目录加入 LD_LIBRARY_PATH，
+  // 否则 llama-server 找不到同目录的 .so 库文件
+  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
+  if (process.platform !== 'win32') {
+    env.LD_LIBRARY_PATH = env.LD_LIBRARY_PATH
+      ? `${coreDir}:${env.LD_LIBRARY_PATH}`
+      : coreDir;
   }
+
+  // 刚更新完的 exe 可能被杀软短暂锁定导致 spawn 失败，重试一次
+  const MAX_ATTEMPTS = 2;
+  let lastErr = '';
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      // llama.cpp 把版本号输出到 stderr；用 spawnSync 直接收 stderr，
+      // 不依赖 shell 的 2>&1 重定向，也不会因非零退出码抛异常
+      const result = spawnSync(exePath, ['--version'], {
+        timeout: 5000,
+        encoding: 'utf-8',
+        cwd: coreDir,
+        env,
+        windowsHide: true,
+      });
+
+      // 优先 stderr（llama.cpp 惯例），其次 stdout
+      const raw = (result.stderr || result.stdout || '').trim();
+      if (raw) {
+        return raw.split(/\r?\n/)[0] || '未知';
+      }
+      lastErr = result.error ? result.error.message : `exit=${result.status}`;
+      console.error(`[GetLocalVersion] 第 ${attempt} 次无输出:`, lastErr);
+    } catch (err: unknown) {
+      lastErr = err instanceof Error ? err.message : String(err);
+      console.error(`[GetLocalVersion] 第 ${attempt} 次失败:`, lastErr);
+    }
+
+    if (attempt < MAX_ATTEMPTS) sleepSync(800);
+  }
+
+  return '未知';
 }
 
 // =============================================================================
@@ -204,7 +212,21 @@ async function extractArchive(
 
 // ---------------------------------------------------------------------------
 // extractZipSync
+//   Windows 上目标文件可能被占用（llama-server 运行中 / Defender 短暂锁定），
+//   逐条重试并显式上报失败，绝不允许静默跳过 — 否则旧二进制保留、
+//   版本探查读到旧版本号，用户会看到"更新完成"但版本未变
 // ---------------------------------------------------------------------------
+
+function sleepSync(ms: number): void {
+  // Atomics.wait 可在同步代码中休眠且不阻塞事件循环之外的东西
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // 环境不支持时退化为忙等（仅重试场景，最多数百毫秒）
+    const end = Date.now() + ms;
+    while (Date.now() < end) { /* spin */ }
+  }
+}
 
 function extractZipSync(
   src: string,
@@ -214,6 +236,8 @@ function extractZipSync(
   const zip = new AdmZip(src);
   const entries = zip.getEntries();
   let count = 0;
+  const failed: string[] = [];
+  const MAX_ATTEMPTS = 3;
 
   for (const entry of entries) {
     if (entry.isDirectory) continue;
@@ -221,16 +245,32 @@ function extractZipSync(
     if (!isTargetBinary(baseName)) continue;
 
     onStatus?.(`提取: ${baseName}`);
-    try {
-      zip.extractEntryTo(entry, dst, false, true, false, baseName);
-      count++;
-    } catch {
-      // skip silently
+
+    let ok = false;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS && !ok; attempt++) {
+      try {
+        zip.extractEntryTo(entry, dst, false, true, false, baseName);
+        ok = true;
+        count++;
+      } catch (err: unknown) {
+        if (attempt < MAX_ATTEMPTS) {
+          onStatus?.(`提取 ${baseName} 失败（第 ${attempt} 次），重试中...`);
+          sleepSync(400);
+        } else {
+          const msg = err instanceof Error ? err.message : String(err);
+          failed.push(`${baseName}: ${msg}`);
+        }
+      }
     }
   }
 
   if (count === 0) {
     throw new Error(noBinaryError('zip'));
+  }
+  if (failed.length > 0) {
+    throw new Error(
+      `以下文件解压失败（文件可能被占用，请先停止正在运行的 llama-server 再更新）:\n${failed.join('\n')}`,
+    );
   }
 }
 

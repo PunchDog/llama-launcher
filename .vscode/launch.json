@@ -1,0 +1,49 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Electron: Main (启动界面 + 调试主进程)",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "windows": {
+        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+      },
+      "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+      "runtimeArgs": [".", "--remote-debugging-port=9223"],
+      "env": {
+        "NODE_ENV": "development"
+      },
+      "outFiles": ["${workspaceFolder}/dist-electron/**/*.js"],
+      "sourceMapPathOverrides": {
+        "..\\..\\src\\*": "${workspaceFolder}\\src\\*",
+        "../../src/*": "${workspaceFolder}/src/*"
+      },
+      "outputCapture": "std",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"],
+      "preLaunchTask": "vite: dev server"
+    },
+    {
+      "name": "Electron: Renderer (调试渲染进程)",
+      "type": "chrome",
+      "request": "attach",
+      "port": 9223,
+      "webRoot": "${workspaceFolder}/src/renderer",
+      "pathMapping": {
+        "/": "${workspaceFolder}/src/renderer"
+      },
+      "timeout": 30000
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Electron: 全栈调试 (Main + Renderer)",
+      "configurations": [
+        "Electron: Main (启动界面 + 调试主进程)",
+        "Electron: Renderer (调试渲染进程)"
+      ],
+      "stopAll": true
+    }
+  ]
+}

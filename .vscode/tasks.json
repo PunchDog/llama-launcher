@@ -1,0 +1,31 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build:electron",
+      "type": "npm",
+      "script": "build:electron",
+      "problemMatcher": "$tsc",
+      "group": "build"
+    },
+    {
+      "label": "vite: dev server",
+      "type": "npm",
+      "script": "dev:renderer",
+      "isBackground": true,
+      "dependsOn": ["build:electron"],
+      "problemMatcher": {
+        "owner": "vite",
+        "fileLocation": "relative",
+        "pattern": {
+          "regexp": "$^"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "(Local:|ready in)"
+        }
+      }
+    }
+  ]
+}

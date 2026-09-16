@@ -232,8 +232,8 @@ export default function CoreManager() {
           </div>
         </Section>
 
-        {/* 进度 */}
-        {isDownloading && (
+        {/* 进度 / 状态（下载中或存在错误时显示，避免失败后错误信息不可见） */}
+        {(isDownloading || updater.error || error) && (
           <Section title="下载进度">
             <div className="mb-2">
               <div className="w-full bg-gray-700 rounded-full h-2">

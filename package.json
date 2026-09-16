@@ -5,6 +5,7 @@
   "main": "dist-electron/main/index.js",
   "scripts": {
     "dev": "concurrently \"vite\" \"tsc -p tsconfig.main.json --watch\" \"electron .\"",
+    "dev:renderer": "vite",
     "build": "tsc -p tsconfig.main.json && vite build",
     "build:electron": "tsc -p tsconfig.main.json",
     "build:renderer": "vite build",
