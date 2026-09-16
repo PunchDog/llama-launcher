@@ -1,9 +1,6 @@
 # 可执行文件
 *.exe
 
-# 本地配置文件
-config.json
-
 # 运行时目录
 core/
 downloads/
