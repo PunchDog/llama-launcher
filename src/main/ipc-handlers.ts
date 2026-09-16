@@ -3,6 +3,7 @@ import { loadConfig, saveConfig, updateConfigField, getCachedConfig } from './co
 import { buildArgs } from './params';
 import { LlamaServerManager, getServerManager } from './server';
 import { CoreUpdater } from './core-updater';
+import { ModelDownloader } from './model-downloader';
 import {
   CheckCoreExists,
   GetLocalVersion,
@@ -15,10 +16,22 @@ import {
 
 let updaterInstance: CoreUpdater | null = null;
 let serverInstance: LlamaServerManager | null = null;
+let modelInstance: ModelDownloader | null = null;
 
 export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   serverInstance = getServerManager();
   updaterInstance = new CoreUpdater();
+  modelInstance = new ModelDownloader();
+
+  // ---------------------------------------------------------------------------
+  // ModelScope 下载日志转发 — 复用 server:on-log 通道，LogViewer 统一展示
+  // ---------------------------------------------------------------------------
+
+  modelInstance.on('log', (line: string) => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('server:on-log', `[modelscope] ${line}`);
+    }
+  });
 
   // ---------------------------------------------------------------------------
   // Server 事件转发 — 只注册一次，避免重复监听
@@ -165,6 +178,48 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     const valid = backend === 'vulkan' || backend === 'rocm' ? backend : 'vulkan';
     upd.selectedBackend = valid;
     return upd.getState();
+  });
+
+  // ---------------------------------------------------------------------------
+  // ModelScope 模型下载通道
+  // ---------------------------------------------------------------------------
+
+  ipcMain.handle('model:check-env', async () => {
+    return modelInstance!.checkEnv();
+  });
+
+  ipcMain.handle('model:install-modelscope', async () => {
+    await modelInstance!.installModelscope();
+  });
+
+  ipcMain.handle('model:search-models', async (_event, { keyword }: { keyword: string }) => {
+    return modelInstance!.searchModels(keyword);
+  });
+
+  ipcMain.handle('model:list-files', async (_event, { modelId }: { modelId: string }) => {
+    return modelInstance!.listFiles(modelId);
+  });
+
+  ipcMain.handle(
+    'model:download',
+    async (
+      _event,
+      req: { modelId: string; localDir: string; files?: string[]; mode: 'http' | 'cli' },
+    ) => {
+      await modelInstance!.download(req);
+    },
+  );
+
+  ipcMain.handle('model:get-progress', () => {
+    return modelInstance!.getState();
+  });
+
+  ipcMain.handle('model:set-proxy', (_event, { proxy }: { proxy: string }) => {
+    modelInstance!.setProxy(proxy);
+  });
+
+  ipcMain.handle('model:cancel', () => {
+    modelInstance!.cancel();
   });
 
   // 文件夹选择对话框

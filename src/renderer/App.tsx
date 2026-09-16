@@ -5,12 +5,14 @@ import BasicConfig from './components/BasicConfig';
 import AdvancedOptions from './components/AdvancedOptions';
 import RpcConfig from './components/RpcConfig';
 import CoreManager from './components/CoreManager';
+import ModelDownloader from './components/ModelDownloader';
 
 const tabs = [
   { key: 'basic', label: '基础配置' },
   { key: 'advanced', label: '高级选项' },
   { key: 'rpc', label: 'RPC 配置' },
   { key: 'core', label: 'Core 管理' },
+  { key: 'model', label: '模型下载' },
 ] as const;
 
 export default function App() {
@@ -44,6 +46,7 @@ export default function App() {
           {activeTab === 'advanced' && <AdvancedOptions />}
           {activeTab === 'rpc' && <RpcConfig />}
           {activeTab === 'core' && <CoreManager />}
+          {activeTab === 'model' && <ModelDownloader />}
         </div>
         <div className="flex-1 flex flex-col">
           <LogViewer />

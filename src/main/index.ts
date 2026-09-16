@@ -31,7 +31,8 @@ function getPreloadPath(): string {
 
 function getRendererUrl(): string {
   if (isDev()) {
-    return 'http://localhost:5173';
+    // 与 vite.config.ts server.port 保持一致（5173 常被其他项目占用）
+    return 'http://127.0.0.1:5174';
   }
   return `file://${path.join(__dirname, '..', '..', 'dist-renderer', 'index.html')}`;
 }
@@ -69,7 +70,7 @@ function createWindow(): void {
         responseHeaders: {
           ...details.responseHeaders,
           'Content-Security-Policy': [
-            "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:* http://localhost:*; img-src 'self' data:; font-src 'self' data:",
+            "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:* http://localhost:* ws://127.0.0.1:* http://127.0.0.1:*; img-src 'self' data:; font-src 'self' data:",
           ],
         },
       });

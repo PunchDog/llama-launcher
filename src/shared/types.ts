@@ -152,6 +152,53 @@ export interface UpdaterState {
 }
 
 // ---------------------------------------------------------------------------
+// ModelScope 模型下载相关
+// ---------------------------------------------------------------------------
+
+/** Python / modelscope 环境检测结果（用于 HTTPS 直链下载失败后的 Python 工具回退） */
+export interface ModelScopeEnvState {
+  pythonInstalled: boolean;
+  pythonPath: string;
+  pythonVersion: string;
+  modelscopeInstalled: boolean;
+  modelscopeVersion: string;
+}
+
+/** 搜索 API 返回的一个模型条目（模型 ID 用于后续下载） */
+export interface ModelInfo {
+  id: string;          // 如 "Qwen/Qwen2.5-7B-Instruct"
+  downloads?: number;
+  task?: string;
+  summary?: string;
+}
+
+/** 模型仓库内单个文件（repo/files API 返回） */
+export interface ModelFile {
+  name: string;
+  path: string;
+  size: number;
+  type: string;        // 'file' | 'tree'
+}
+
+/** 模型下载器状态 — 进度/日志由主进程通过 EventEmitter 推送给渲染进程 */
+export interface ModelDownloadState {
+  progress: number;
+  status: string;
+  error: string;
+  isDownloading: boolean;
+  mode: 'http' | 'cli' | '';  // 当前下载方式：HTTPS 直链 / Python CLI / 空闲
+  modelId: string;
+  localDir: string;
+  currentFile: string;
+  downloadedBytes: number;
+  downloadSize: number;
+  /** HTTPS 直链下载失败，提示改用 Python 工具 */
+  httpFailed: boolean;
+  files: ModelFile[];
+  selectedFiles: string[];
+}
+
+// ---------------------------------------------------------------------------
 // IPC 通道类型映射（使用泛型确保类型安全）
 //   - TChannel extends keyof IpcChannelMap → 编译时校验通道名
 //   - 只读映射表，避免运行时膨胀
@@ -177,6 +224,15 @@ export interface IpcChannelMap {
   'updater:get-progress': { response: UpdaterState };
   'updater:set-proxy': { request: { proxy: string }; response: void };
   'updater:set-backend': { request: { backend: string }; response: UpdaterState };
+  // ----- ModelScope 模型下载 -----
+  'model:check-env': { response: ModelScopeEnvState };
+  'model:install-modelscope': { response: void };
+  'model:search-models': { request: { keyword: string }; response: ModelInfo[] };
+  'model:list-files': { request: { modelId: string }; response: ModelFile[] };
+  'model:download': { request: { modelId: string; localDir: string; files?: string[]; mode: 'http' | 'cli' }; response: void };
+  'model:get-progress': { response: ModelDownloadState };
+  'model:set-proxy': { request: { proxy: string }; response: void };
+  'model:cancel': { response: void };
 }
 
 // ---------------------------------------------------------------------------
