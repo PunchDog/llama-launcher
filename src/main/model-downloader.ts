@@ -451,8 +451,12 @@ export class ModelDownloader extends EventEmitter {
         try {
           await this.downloadHttpFiles(req.modelId, req.localDir, req.files ?? []);
         } catch (err) {
-          this.state.httpFailed = true;
           const msg = err instanceof Error ? err.message : String(err);
+          // 用户主动取消：cancel() 已复位状态，这里静默返回，不当作失败
+          if (this._abort?.signal.aborted || /canceled|aborted/i.test(msg)) {
+            return;
+          }
+          this.state.httpFailed = true;
           this.setError(`HTTPS 直链下载失败：${msg}`);
           throw err;
         }
@@ -489,6 +493,8 @@ export class ModelDownloader extends EventEmitter {
     let downloadedAll = 0;
 
     fs.mkdirSync(localDir, { recursive: true });
+    // 写入下载清单，供取消时清理；成功完成后移除
+    this.writeManifest(localDir, modelId, 'http', targets);
 
     for (let i = 0; i < targets.length; i++) {
       const rel = targets[i];
@@ -505,6 +511,7 @@ export class ModelDownloader extends EventEmitter {
     }
 
     this.state.progress = 100;
+    this.cleanupManifest(localDir);
     this.setStatus(`✅ HTTPS 下载完成：共 ${targets.length} 个文件 → ${localDir}`);
   }
 
@@ -558,7 +565,31 @@ export class ModelDownloader extends EventEmitter {
     });
   }
 
-  /** Python modelscope CLI 下载（回退路径） */
+  /**
+   * 解析 modelscope CLI 可执行文件路径。
+   * CLI 入口是 console 脚本（Scripts/modelscope.exe），`python -m modelscope.cli.download`
+   * 在新版（≥1.16）中不存在。优先从 Python prefix 的 Scripts 目录定位，其次回退 PATH。
+   */
+  private async resolveModelscopeBin(): Promise<string> {
+    try {
+      const r = spawnSync(
+        this._pythonPath || 'python',
+        ['-c', 'import sys,os;print(os.path.join(sys.prefix, "Scripts"))'],
+        { encoding: 'utf-8', windowsHide: true, timeout: 15000 },
+      );
+      const scriptsDir = (r.stdout || '').trim();
+      if (scriptsDir) {
+        const exe = process.platform === 'win32' ? 'modelscope.exe' : 'modelscope';
+        const p = path.join(scriptsDir, exe);
+        if (fs.existsSync(p)) return p;
+      }
+    } catch {
+      // 回退到 PATH 查找
+    }
+    return 'modelscope';
+  }
+
+  /** Python modelscope CLI 下载（回退路径）：modelscope download <repo_id> [files...] --local_dir */
   private async downloadCli(
     modelId: string,
     localDir: string,
@@ -577,13 +608,14 @@ export class ModelDownloader extends EventEmitter {
     this.state.localDir = localDir;
     this.setStatus(`使用 ModelScope Python 工具下载: ${modelId}`);
 
-    const args = ['-m', 'modelscope.cli.download', '--model', modelId, '--local_dir', localDir];
-    if (files && files.length) {
-      args.push('--include', files.join(' '));
-    }
+    const bin = await this.resolveModelscopeBin();
+    // files 作为位置参数（为空 = 下载整个仓库快照）
+    const args = ['download', modelId, ...(files && files.length ? files : []), '--local_dir', localDir];
+    // 写入下载清单（CLI 模式目标路径为 localDir/相对路径），供取消时清理
+    this.writeManifest(localDir, modelId, 'cli', files ?? []);
 
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(this._pythonPath, args, {
+      const child = spawn(bin, args, {
         windowsHide: true,
         env: this.cliEnv(),
       });
@@ -595,7 +627,11 @@ export class ModelDownloader extends EventEmitter {
         this._child = null;
         if (code === 0) {
           this.state.progress = 100;
+          this.cleanupManifest(localDir);
           this.setStatus(`✅ Python 工具下载完成 → ${localDir}`);
+          resolve();
+        } else if (this._abort?.signal.aborted) {
+          // 用户主动取消：状态已由 cancel() 复位，静默结束
           resolve();
         } else {
           reject(new Error(`modelscope CLI 退出码 ${code}`));
@@ -617,6 +653,65 @@ export class ModelDownloader extends EventEmitter {
     }
   }
 
+  // ----- 下载清单（manifest）-----
+  //   下载开始时在 localDir 写入 .modelscope-download-manifest.json 记录本次
+  //   全部目标文件路径；下载成功 → 仅删 manifest；用户取消 → 按 manifest 删除
+  //   所有已写入的文件（含未完成分块）后再删 manifest。
+
+  private manifestPath(localDir: string): string {
+    return path.join(localDir, '.modelscope-download-manifest.json');
+  }
+
+  private writeManifest(
+    localDir: string,
+    modelId: string,
+    mode: 'http' | 'cli',
+    relPaths: string[],
+  ): void {
+    fs.mkdirSync(localDir, { recursive: true });
+    const manifest = {
+      modelId,
+      mode,
+      createdAt: new Date().toISOString(),
+      files: relPaths.map((p) => path.join(localDir, p)),
+    };
+    fs.writeFileSync(this.manifestPath(localDir), JSON.stringify(manifest, null, 2), 'utf-8');
+  }
+
+  /** 按 manifest 清理未完成下载的所有文件，并删除 manifest 自身 */
+  private removeManifestFiles(localDir: string): void {
+    const mp = this.manifestPath(localDir);
+    try {
+      if (!fs.existsSync(mp)) return;
+      const raw = fs.readFileSync(mp, 'utf-8');
+      const manifest = JSON.parse(raw) as { files?: string[] };
+      for (const f of manifest.files ?? []) {
+        try {
+          if (fs.existsSync(f)) fs.unlinkSync(f);
+          this.emit('log', `[modelscope] 已清理: ${f}`);
+        } catch {
+          // 单个文件删除失败不阻断整体清理
+        }
+      }
+    } catch {
+      // manifest 损坏时也继续删除它
+    }
+    try {
+      fs.unlinkSync(mp);
+    } catch {
+      // ignore
+    }
+  }
+
+  /** 下载成功后仅移除 manifest 记录文件 */
+  private cleanupManifest(localDir: string): void {
+    try {
+      fs.unlinkSync(this.manifestPath(localDir));
+    } catch {
+      // ignore
+    }
+  }
+
   // ----- 取消 -----
 
   cancel(): void {
@@ -629,7 +724,16 @@ export class ModelDownloader extends EventEmitter {
       }
       this._child = null;
     }
-    this.setStatus('已取消');
+    // 按下载清单清理本次所有未完成文件
+    const dir = this.state.localDir;
+    if (dir) this.removeManifestFiles(dir);
+    this.setStatus('已取消，已清理未完成的下载文件');
     this.state.isDownloading = false;
+    this.state.mode = '';
+    this.state.httpFailed = false;
+    this.state.currentFile = '';
+    this.state.progress = 0;
+    this.state.downloadedBytes = 0;
+    this.state.downloadSize = 0;
   }
 }

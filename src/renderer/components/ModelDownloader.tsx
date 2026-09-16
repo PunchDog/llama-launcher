@@ -248,15 +248,25 @@ export default function ModelDownloader() {
         </Section>
 
         {/* 区块五：下载与进度 */}
-        <Section title="下载" desc="优先 HTTPS 直链；失败可改用 ModelScope Python 工具">
+        <Section title="下载" desc="优先 HTTPS 直链；下载开始会生成清单文件记录本次内容，完成或取消时自动清理">
           <div className="space-y-2">
             <TextInput value={modelId} onChange={setModelId} mono placeholder="模型名，如 Qwen/Qwen2.5-7B-Instruct" disabled={isDownloading} />
             <div className="flex gap-2">
               <Button variant="primary" onClick={handleDownloadHttp} disabled={isDownloading || !modelId || !localDir} className="flex-1">
-                {state.mode === 'cli' ? '下载中...' : '下载（HTTPS）'}
+                {state.mode === 'http' ? '下载中...' : '下载（HTTPS）'}
               </Button>
+              {env?.modelscopeInstalled && (
+                <Button
+                  variant="secondary"
+                  onClick={handleUseCli}
+                  disabled={isDownloading || !modelId || !localDir}
+                  title="使用 ModelScope Python 工具下载"
+                >
+                  {state.mode === 'cli' ? '下载中...' : 'Python 工具下载'}
+                </Button>
+              )}
               {isDownloading && (
-                <Button variant="danger" onClick={cancel}>
+                <Button variant="danger" onClick={cancel} title="停止下载并清理本次已下载的文件">
                   取消
                 </Button>
               )}
@@ -284,9 +294,13 @@ export default function ModelDownloader() {
             {state.httpFailed && (
               <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2">
                 <p className="text-xs text-red-300">HTTPS 直链下载失败，可改用 ModelScope Python 工具继续下载。</p>
-                <Button variant="secondary" onClick={handleUseCli} disabled={installing} className="mt-2 w-full">
-                  {installing ? '准备中...' : env?.modelscopeInstalled ? '使用 Python 工具下载' : '安装并使用 Python 工具'}
-                </Button>
+                {env?.modelscopeInstalled ? (
+                  <p className="text-[11px] text-gray-400 mt-1">已安装 ModelScope，点击上方「Python 工具下载」继续。</p>
+                ) : (
+                  <Button variant="secondary" onClick={handleUseCli} disabled={installing} className="mt-2 w-full">
+                    {installing ? '准备中...' : '安装并使用 Python 工具'}
+                  </Button>
+                )}
               </div>
             )}
 

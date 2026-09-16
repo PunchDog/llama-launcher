@@ -144,11 +144,14 @@ export function useModelDownloader(): UseModelDownloaderReturn {
   const cancel = useCallback(async () => {
     try {
       await invoke('model:cancel');
+      // 立即同步主进程已复位的状态（进度条隐藏 / 按钮文案复原）
+      await refreshProgress();
+      setState((prev) => ({ ...prev, isDownloading: false }));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
     }
-  }, []);
+  }, [refreshProgress]);
 
   const setProxy = useCallback(async (proxy: string) => {
     await invoke('model:set-proxy', { proxy });
