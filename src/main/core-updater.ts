@@ -16,6 +16,7 @@ import {
   GITHUB_API_REPO_URL,
   CORE_DIR_NAME,
   DOWNLOAD_DIR_NAME,
+  ARCH_LABEL,
   getBackendKeyword,
   getBackendLabel,
   isBackendAvailable,
@@ -70,7 +71,11 @@ export function GetLocalVersion(): string {
       // 优先 stderr（llama.cpp 惯例），其次 stdout
       const raw = (result.stderr || result.stdout || '').trim();
       if (raw) {
-        return raw.split(/\r?\n/)[0] || '未知';
+        const first = raw.split(/\r?\n/)[0] || '';
+        // 只显示构建号（如 "version: 6119 (b10964)" → "b10964"），
+        // 完整输出版本信息过长，不适合 UI 展示
+        const m = first.match(/\bb\d{3,}\b/i);
+        return m ? m[0].toLowerCase() : first;
       }
       lastErr = result.error ? result.error.message : `exit=${result.status}`;
       console.error(`[GetLocalVersion] 第 ${attempt} 次无输出:`, lastErr);
@@ -654,7 +659,8 @@ export class CoreUpdater extends EventEmitter {
       fs.mkdirSync(downloadDirPath, { recursive: true });
 
       const ext = getArchiveExt(assetName);
-      const localFileName = `llama-${tag}-${osName}-${backend}${ext}`;
+      // 文件名带架构标识，避免同 OS+后端下 x86/arm 包互相覆盖缓存
+      const localFileName = `llama-${tag}-${osName}-${ARCH_LABEL}-${backend}${ext}`;
       const downloadFile = path.join(downloadDirPath, localFileName);
 
       let cached = false;

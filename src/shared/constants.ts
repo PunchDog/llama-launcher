@@ -21,6 +21,14 @@ export const CORE_DIR_NAME = 'core';
 export const DOWNLOAD_DIR_NAME = 'downloads';
 
 // ---------------------------------------------------------------------------
+// 架构标识 — 下载缓存文件名用，区分 x86 / arm 包避免互相覆盖
+//   （renderer 环境无 process，用 typeof 守卫；主进程按真实架构取值）
+// ---------------------------------------------------------------------------
+
+export const ARCH_LABEL: string =
+  typeof process !== 'undefined' && process.arch === 'arm64' ? 'arm' : 'x86';
+
+// ---------------------------------------------------------------------------
 // OS → Asset 搜索关键词（OS + GPU 后端组合）
 // ---------------------------------------------------------------------------
 
@@ -47,7 +55,9 @@ export function getBackendKeyword(backend: GpuBackend, platform: string): string
   const map: Record<string, Record<string, string>> = {
     vulkan: {
       windows: 'bin-win-vulkan',
-      linux: 'bin-ubuntu-vulkan',  // 匹配 llama-b*-bin-ubuntu-vulkan-x64.tar.gz
+      // 精确匹配 x64 包（llama-b*-bin-ubuntu-vulkan-x64.tar.gz）；
+      // 若只写 bin-ubuntu-vulkan，子串匹配会误命中 arm64 资产
+      linux: 'bin-ubuntu-vulkan-x64',
       darwin: 'bin-macos-vulkan',
     },
     rocm: {
