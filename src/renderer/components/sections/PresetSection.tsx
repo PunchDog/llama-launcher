@@ -1,18 +1,20 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Config } from '../../../shared/types';
+import { useConfigStore } from '../../stores/configStore';
 import { Section, SelectInput, Button, type SelectOption } from '../ui';
 
 // =============================================================================
 // PresetSection — 参数预设（数据来自 config.json 顶层 presets 字段）
+//   预设只写「点路径 → 值」，套用即按路径覆盖；未在预设里出现的参数保持原值
 // =============================================================================
 
 interface PresetSectionProps {
   config: Config;
-  saveConfig: (cfg: Config) => Promise<void>;
 }
 
-export default function PresetSection({ config, saveConfig }: PresetSectionProps) {
-  const presets = config.presets ?? [];
+export default function PresetSection({ config }: PresetSectionProps) {
+  const setParams = useConfigStore((s) => s.setParams);
+  const presets = useMemo(() => config.presets ?? [], [config.presets]);
   const [selectedId, setSelectedId] = useState(presets[0]?.id ?? '');
   const [appliedName, setAppliedName] = useState('');
   const timerRef = useRef<number | null>(null);
@@ -40,16 +42,10 @@ export default function PresetSection({ config, saveConfig }: PresetSectionProps
     title: p.hint,
   }));
 
-  const handleApply = async () => {
+  const handleApply = () => {
     if (!selected) return;
-    const next: Config = {
-      ...config,
-      ...selected.config,
-      optional: { ...config.optional, ...(selected.optional ?? {}) },
-      // presets 自身与私有项（models_dir/host/port/api_key/spec_draft_model）保持不变
-      presets: config.presets,
-    };
-    await saveConfig(next);
+    // 走 configStore 的统一写路径：一次乐观合批 + 一次落盘，非法路径在那里拦下
+    setParams({ ...selected.changes } as unknown as Record<string, unknown>);
     setAppliedName(selected.name);
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => setAppliedName(''), 3000);

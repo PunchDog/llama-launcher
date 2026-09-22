@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useModelDownloader } from '../hooks/useModelDownloader';
 import { useConfig } from '../hooks/useConfig';
+import { invoke } from '../hooks/api';
 import { Section, TextInput, PathInput, Button } from './ui';
+import { formatSpeed } from '../utils/format';
+import { effectiveProxy } from '@/shared/proxy';
 import { ModelFile } from '@/shared/types';
 
 // =============================================================================
@@ -30,10 +33,15 @@ export default function ModelDownloader() {
     env,
     models,
     files,
+    browsed,
+    selectedFiles,
+    target,
     error,
+    setTarget,
     installModelscope,
     searchModels,
     listFiles,
+    toggleFile,
     download,
     cancel,
     setProxy,
@@ -41,25 +49,23 @@ export default function ModelDownloader() {
   const { config } = useConfig();
 
   const [keyword, setKeyword] = useState('');
-  const [modelId, setModelId] = useState('');
   const [localDir, setLocalDir] = useState('');
-  const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const [installing, setInstalling] = useState(false);
 
-  // 默认下载路径取配置 models_dir
+  // 默认下载路径取配置里的模型目录
   useEffect(() => {
-    if (config?.models_dir && !localDir) setLocalDir(config.models_dir);
-  }, [config?.models_dir]); // eslint-disable-line react-hooks/exhaustive-deps
+    const dir = config?.server.models_dir;
+    if (dir && !localDir) setLocalDir(dir);
+  }, [config?.server.models_dir]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 同步代理设置到主进程下载器
+  // 同步代理设置到主进程下载器（规则唯一来源：shared/proxy.ts）
   useEffect(() => {
     if (!config) return;
-    const proxy = config.proxy_enabled ? config.proxy_url || 'http://127.0.0.1:7890' : '';
-    setProxy(proxy);
-  }, [config?.proxy_enabled, config?.proxy_url]); // eslint-disable-line react-hooks/exhaustive-deps
+    setProxy(effectiveProxy(config));
+  }, [config?.proxy.enabled, config?.proxy.url]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const pickFolder = useCallback(async () => {
-    const folder = (await window.electronAPI.invoke('dialog:open-folder')) as string | null;
+    const folder = await invoke('dialog:open-folder');
     if (folder) setLocalDir(folder);
   }, []);
 
@@ -69,25 +75,20 @@ export default function ModelDownloader() {
 
   const handleSelectModel = useCallback(
     (id: string) => {
-      setModelId(id);
-      setSelectedFiles([]);
+      setTarget(id);
       listFiles(id);
     },
-    [listFiles],
+    [listFiles, setTarget],
   );
 
   const handleListFiles = useCallback(() => {
-    if (modelId) listFiles(modelId);
-  }, [modelId, listFiles]);
-
-  const toggleFile = useCallback((p: string) => {
-    setSelectedFiles((prev) => (prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]));
-  }, []);
+    if (target) listFiles(target);
+  }, [target, listFiles]);
 
   const handleDownloadHttp = useCallback(() => {
-    if (!modelId || !localDir) return;
-    download({ modelId, localDir, files: selectedFiles, mode: 'http' });
-  }, [modelId, localDir, selectedFiles, download]);
+    if (!target || !localDir) return;
+    download({ modelId: target, localDir, files: selectedFiles, mode: 'http' });
+  }, [target, localDir, selectedFiles, download]);
 
   const handleUseCli = useCallback(async () => {
     if (!env?.modelscopeInstalled) {
@@ -98,9 +99,9 @@ export default function ModelDownloader() {
         setInstalling(false);
       }
     }
-    if (!modelId || !localDir) return;
-    download({ modelId, localDir, files: selectedFiles, mode: 'cli' });
-  }, [env?.modelscopeInstalled, installModelscope, modelId, localDir, selectedFiles, download]);
+    if (!target || !localDir) return;
+    download({ modelId: target, localDir, files: selectedFiles, mode: 'cli' });
+  }, [env?.modelscopeInstalled, installModelscope, target, localDir, selectedFiles, download]);
 
   const handleInstall = useCallback(async () => {
     setInstalling(true);
@@ -204,7 +205,7 @@ export default function ModelDownloader() {
                   key={m.id}
                   onClick={() => handleSelectModel(m.id)}
                   className={`w-full text-left px-2 py-1.5 transition-colors hover:bg-gray-700/50 ${
-                    modelId === m.id ? 'bg-blue-600/15' : ''
+                    target === m.id ? 'bg-blue-600/15' : ''
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -225,16 +226,16 @@ export default function ModelDownloader() {
         {/* 区块四：文件列表 */}
         <Section
           title="文件列表"
-          desc={modelId ? `模型 ${modelId} 的文件，勾选需下载的文件` : '请先在上一步选择模型'}
+          desc={browsed ? `模型 ${browsed} 的文件，勾选需下载的文件` : '请先在上一步选择模型'}
           actions={
-            modelId ? (
+            browsed ? (
               <Button variant="ghost" onClick={handleListFiles} disabled={isDownloading}>
                 刷新
               </Button>
             ) : undefined
           }
         >
-          {modelId ? (
+          {browsed ? (
             files.length > 0 ? (
               <div className="max-h-60 overflow-y-auto rounded border border-gray-700">
                 {files.map(renderFileRow)}
@@ -250,16 +251,16 @@ export default function ModelDownloader() {
         {/* 区块五：下载与进度 */}
         <Section title="下载" desc="优先 HTTPS 直链；下载开始会生成清单文件记录本次内容，完成或取消时自动清理">
           <div className="space-y-2">
-            <TextInput value={modelId} onChange={setModelId} mono placeholder="模型名，如 Qwen/Qwen2.5-7B-Instruct" disabled={isDownloading} />
+            <TextInput value={target} onChange={setTarget} mono placeholder="模型名，如 Qwen/Qwen2.5-7B-Instruct" disabled={isDownloading} />
             <div className="flex gap-2">
-              <Button variant="primary" onClick={handleDownloadHttp} disabled={isDownloading || !modelId || !localDir} className="flex-1">
+              <Button variant="primary" onClick={handleDownloadHttp} disabled={isDownloading || !target || !localDir} className="flex-1">
                 {state.mode === 'http' ? '下载中...' : '下载（HTTPS）'}
               </Button>
               {env?.modelscopeInstalled && (
                 <Button
                   variant="secondary"
                   onClick={handleUseCli}
-                  disabled={isDownloading || !modelId || !localDir}
+                  disabled={isDownloading || !target || !localDir}
                   title="使用 ModelScope Python 工具下载"
                 >
                   {state.mode === 'cli' ? '下载中...' : 'Python 工具下载'}
@@ -285,6 +286,16 @@ export default function ModelDownloader() {
                     {state.currentFile || state.status}
                   </span>
                   <span className="text-xs text-blue-400 font-mono shrink-0 ml-2">
+                    {formatSpeed(state.downloadSpeed)}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center mt-0.5">
+                  <span className="text-xs text-gray-400">
+                    {state.downloadSize > 0
+                      ? `${formatSize(state.downloadedBytes)} / ${formatSize(state.downloadSize)}`
+                      : ''}
+                  </span>
+                  <span className="text-xs text-blue-400 font-mono">
                     {state.progress.toFixed(1)}%
                   </span>
                 </div>

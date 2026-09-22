@@ -9,81 +9,302 @@
 export type GpuBackend = 'vulkan' | 'rocm';
 
 // ---------------------------------------------------------------------------
-// Config 相关（完全映射 Go 版 config.go，JSON tag 使用 snake_case）
+// 三态（tri-state）参数值
+//   null = inherit：不写进命令行，由 llama-server 自己决定默认值
+//   非 null = explicit：写进命令行
+//   数组型参数用 [] 表示 inherit
 // ---------------------------------------------------------------------------
 
-export interface RPCServerConfig {
+export type Tri<T> = T | null;
+
+// ---------------------------------------------------------------------------
+// Config 相关
+//   v2：全部 llama-server 参数集中在 ParamsConfig，按参数域分组，值一律三态；
+//   字段路径与 src/shared/params/groups/*.ts 里的 ParamDef.key 一一对应，
+//   新增/改名只能改元数据表，本文件同步维护。
+// ---------------------------------------------------------------------------
+
+/** 服务与网络 — 对应 llama-server 的 host/port/endpoint/路由类参数 */
+export interface ServerParams {
+  host: Tri<string>;
+  port: Tri<number>;
+  timeout: Tri<number>;
+  api_key: Tri<string>;
+  api_key_file: Tri<string>;
+  reuse_port: Tri<boolean>;
+  api_prefix: Tri<string>;
+  static_path: Tri<string>;
+  media_path: Tri<string>;
+  cors_origins: Tri<string>;
+  metrics: Tri<boolean>;
+  props: Tri<boolean>;
+  slots: Tri<boolean>;
+  slot_save_path: Tri<string>;
+  slot_prompt_similarity: Tri<number>;
+  models_dir: Tri<string>;
+  models_max: Tri<number>;
+  models_autoload: Tri<boolean>;
+  alias: Tri<string>;
+  tags: Tri<string>;
+  parallel: Tri<number>;
+  cont_batching: Tri<boolean>;
+  warmup: Tri<boolean>;
+  sleep_idle_seconds: Tri<number>;
+  embedding: Tri<boolean>;
+  rerank: Tri<boolean>;
+  pooling: Tri<string>;
+  embd_normalize: Tri<number>;
+  webui: Tri<boolean>;
+}
+
+/** 模型加载 — 模型文件、上下文规模、位置编码扩展、对话模板 */
+export interface ModelParams {
+  model: Tri<string>;
+  ctx_size: Tri<number>;
+  batch_size: Tri<number>;
+  ubatch_size: Tri<number>;
+  n_predict: Tri<number>;
+  keep: Tri<number>;
+  load_mode: Tri<string>;
+  lazy_mode: Tri<string>;
+  flash_attn: Tri<string>;
+  rope_scaling: Tri<string>;
+  rope_scale: Tri<number>;
+  rope_freq_base: Tri<number>;
+  rope_freq_scale: Tri<number>;
+  yarn_orig_ctx: Tri<number>;
+  yarn_ext_factor: Tri<number>;
+  yarn_attn_factor: Tri<number>;
+  yarn_beta_slow: Tri<number>;
+  yarn_beta_fast: Tri<number>;
+  chat_template: Tri<string>;
+  chat_template_file: Tri<string>;
+  jinja: Tri<boolean>;
+  special: Tri<boolean>;
+  spm_infill: Tri<boolean>;
+}
+
+/** 显存与缓存 — 层卸载、KV cache、prompt cache、--fit 自适应 */
+export interface MemoryParams {
+  ngl: Tri<string>;
+  device: Tri<string>;
+  split_mode: Tri<string>;
+  tensor_split: Tri<string>;
+  main_gpu: Tri<number>;
+  cache_type_k: Tri<string>;
+  cache_type_v: Tri<string>;
+  kv_unified: Tri<boolean>;
+  kv_unified_per_slot: Tri<number>;
+  kv_offload: Tri<boolean>;
+  swa_full: Tri<boolean>;
+  cache_ram: Tri<number>;
+  cache_idle_slots: Tri<boolean>;
+  cache_prompt: Tri<boolean>;
+  cache_reuse: Tri<number>;
+  context_shift: Tri<boolean>;
+  fit: Tri<string>;
+  fit_target: Tri<number>;
+  fit_ctx: Tri<number>;
+  ctx_checkpoints: Tri<number>;
+  checkpoint_min_step: Tri<number>;
+}
+
+/** 计算与线程 — CPU 线程/亲和性/NUMA、MoE 权重驻留 */
+export interface ComputeParams {
+  threads: Tri<number>;
+  threads_batch: Tri<number>;
+  threads_http: Tri<number>;
+  numa: Tri<string>;
+  cpu_mask: Tri<string>;
+  cpu_range: Tri<string>;
+  cpu_strict: Tri<number>;
+  prio: Tri<number>;
+  poll: Tri<number>;
+  cpu_moe: Tri<boolean>;
+  n_cpu_moe: Tri<number>;
+  n_cpu_ffn: Tri<number>;
+  repack: Tri<boolean>;
+  op_offload: Tri<boolean>;
+  no_host: Tri<boolean>;
+  perf: Tri<boolean>;
+}
+
+/** 采样 — 生成随机性与重复惩罚 */
+export interface SamplingParams {
+  temperature: Tri<number>;
+  top_k: Tri<number>;
+  top_p: Tri<number>;
+  min_p: Tri<number>;
+  top_n_sigma: Tri<number>;
+  typical_p: Tri<number>;
+  xtc_probability: Tri<number>;
+  xtc_threshold: Tri<number>;
+  dynatemp_range: Tri<number>;
+  dynatemp_exponent: Tri<number>;
+  mirostat: Tri<number>;
+  mirostat_lr: Tri<number>;
+  mirostat_ent: Tri<number>;
+  adaptive_target: Tri<number>;
+  adaptive_decay: Tri<number>;
+  repeat_penalty: Tri<number>;
+  repeat_last_n: Tri<number>;
+  presence_penalty: Tri<number>;
+  frequency_penalty: Tri<number>;
+  dry_multiplier: Tri<number>;
+  dry_base: Tri<number>;
+  dry_allowed_length: Tri<number>;
+  dry_penalty_last_n: Tri<number>;
+  dry_sequence_breaker: Tri<string[]>;
+  samplers: Tri<string>;
+  seed: Tri<number>;
+  ignore_eos: Tri<boolean>;
+  logit_bias: Tri<string[]>;
+  grammar: Tri<string>;
+  grammar_file: Tri<string>;
+  json_schema: Tri<string>;
+  json_schema_file: Tri<string>;
+}
+
+/** 投机解码 — --spec-type 分支及其调优 */
+export interface SpeculativeParams {
+  spec_type: Tri<string>;
+  draft_n_max: Tri<number>;
+  draft_n_min: Tri<number>;
+  draft_model: Tri<string>;
+  draft_ngl: Tri<string>;
+  draft_type_k: Tri<string>;
+  draft_type_v: Tri<string>;
+  draft_p_split: Tri<number>;
+  draft_p_min: Tri<number>;
+  draft_backend_sampling: Tri<boolean>;
+  ngram_mod_n_min: Tri<number>;
+  ngram_mod_n_max: Tri<number>;
+  ngram_mod_n_match: Tri<number>;
+  ngram_simple_size_n: Tri<number>;
+  ngram_simple_size_m: Tri<number>;
+  ngram_simple_min_hits: Tri<number>;
+  ngram_map_k_size_n: Tri<number>;
+  ngram_map_k_size_m: Tri<number>;
+  ngram_map_k_min_hits: Tri<number>;
+  ngram_map_k4v_size_n: Tri<number>;
+  ngram_map_k4v_size_m: Tri<number>;
+  ngram_map_k4v_min_hits: Tri<number>;
+  lookup_cache_static: Tri<string>;
+  lookup_cache_dynamic: Tri<string>;
+}
+
+/** 推理/思考链 — reasoning 系参数与模板附加参数 */
+export interface ReasoningParams {
+  reasoning: Tri<string>;
+  reasoning_format: Tri<string>;
+  reasoning_effort: Tri<string>;
+  reasoning_budget: Tri<number>;
+  reasoning_budget_message: Tri<string>;
+  reasoning_preserve: Tri<boolean>;
+  chat_template_kwargs: Tri<string>;
+  prefill_assistant: Tri<boolean>;
+  skip_chat_parsing: Tri<boolean>;
+}
+
+/** 多模态 — mmproj 与图像/视频输入 */
+export interface MultimodalParams {
+  mmproj: Tri<string>;
+  mmproj_url: Tri<string>;
+  mmproj_auto: Tri<boolean>;
+  mmproj_offload: Tri<boolean>;
+  mmproj_device: Tri<string>;
+  image_min_tokens: Tri<number>;
+  image_max_tokens: Tri<number>;
+  mtmd_batch_max_tokens: Tri<number>;
+  video_fps: Tri<number>;
+  video_timestamp_interval: Tri<number>;
+  video_ffmpeg_dir: Tri<string>;
+}
+
+/** LoRA 与控制向量 */
+export interface LoraParams {
+  lora: Tri<string[]>;
+  lora_scaled: Tri<string>;
+  control_vector: Tri<string[]>;
+  control_vector_scaled: Tri<string>;
+  control_vector_layer_range: Tri<string[]>;
+  lora_init_without_apply: Tri<boolean>;
+}
+
+/** RPC 客户端端点（rpc-server 子进程本身属应用层配置，见 RpcServerAppConfig） */
+export interface RpcParams {
+  endpoints: Tri<string[]>;
+}
+
+/** 日志、调试与高级覆写 */
+export interface AdvancedParams {
+  verbose: Tri<boolean>;
+  log_disable: Tri<boolean>;
+  log_file: Tri<string>;
+  log_verbosity: Tri<number>;
+  log_prefix: Tri<boolean>;
+  log_timestamps: Tri<boolean>;
+  log_jsonl: Tri<boolean>;
+  log_colors: Tri<string>;
+  check_tensors: Tri<boolean>;
+  offline: Tri<boolean>;
+  escape: Tri<boolean>;
+  override_kv: Tri<string[]>;
+  override_tensor: Tri<string[]>;
+  /** 内置工具名列表（csv），all 表示开放全部内置工具 */
+  tools: Tri<string[]>;
+}
+
+/** 逃生口 — 原样追加到命令行末尾的裸参数（不校验、最后发射） */
+export interface ExtraParams {
+  args: Tri<string[]>;
+}
+
+/** 所有会发射到 llama-server 命令行的参数 */
+export interface ParamsConfig {
+  server: ServerParams;
+  model: ModelParams;
+  memory: MemoryParams;
+  compute: ComputeParams;
+  sampling: SamplingParams;
+  speculative: SpeculativeParams;
+  reasoning: ReasoningParams;
+  multimodal: MultimodalParams;
+  lora: LoraParams;
+  rpc: RpcParams;
+  advanced: AdvancedParams;
+  extra: ExtraParams;
+}
+
+/** 本地 ggml-rpc-server 子进程 — 应用层，不发射为 llama-server 参数 */
+export interface RpcServerAppConfig {
   enabled: boolean;
   host: string;
   port: number;
-  workers: number;
-  timeout: number;
 }
 
-export interface OptionalConfig {
-  model: string;
-  cont_batching: boolean;
-  log_format: string;
-  log_disable: boolean;
-  verbose: boolean;
-  mlock: boolean;
-  no_mmap: boolean;
-  embedding: boolean;
-  pooling: string;
-  rope_scaling: string;
-  rope_freq_base: number;
-  rope_freq_scale: number;
-  numa: boolean;
-  low_vram: boolean;
-  tfs_z: number;
-  top_k: number;
-  top_p: number;
-  min_p: number;
-  temperature: number;
-  repeat_penalty: number;
-  repeat_last_n: number;
-  presence_penalty: number;
-  frequency_penalty: number;
-  jinja: boolean;
-  chatTemplateKwargs: string;
+/** 本地 ggml-rpc-server 子进程 + RPC 客户端端点列表 */
+export interface RpcConfig extends RpcParams {
+  server: RpcServerAppConfig;
 }
 
-export interface Config {
-  models_dir: string;
-  models_max: number;
-  timeout: number;
-  host: string;
-  port: number;
-  api_key: string;
-  ngl: number;
-  flash_attn: string;
-  cache_type_k: string;
-  cache_type_v: string;
-  threads: number;
-  batch_size: number;
-  ctx_size: number;
-  n_predict: number;
-  parallel: number;
-  metrics: boolean;
-  tensor_batch: number;
-  kv_unified: boolean;
-  mtp: number;
-  /** 投机解码类型：none / draft-* / ngram-*（见 constants.ts SPEC_TYPES） */
-  spec_type: string;
-  /** 草稿模型 GGUF 文件路径（draft-simple/eagle3/dflash/dspark 需要；DFlash2 走 draft-dflash） */
-  spec_draft_model: string;
-  /** 草稿模型 GPU 层数：'auto' | 'all' | 数字字符串（llama.cpp 默认 auto） */
-  spec_draft_ngl: string;
-  proxy_enabled: boolean;
-  proxy_url: string;
-  optional: OptionalConfig;
-  rpc_server: RPCServerConfig;
+export interface Config extends Omit<ParamsConfig, 'rpc'> {
+  rpc: RpcConfig;
+  /** 启动器自身的网络代理设置（不参与命令行） */
+  proxy: { enabled: boolean; url: string };
   /** 参数预设列表 — 存于 config.json，可手动编辑增删 */
   presets: ConfigPreset[];
+  /** v1 迁移时未被参数表认领的旧字段：只保留不发射，供用户自查后删除 */
+  unknown_v1?: Record<string, unknown>;
+  /** 配置结构版本号（config.ts 阶梯式迁移的判定依据），由主进程维护 */
+  config_version?: number;
 }
 
+/** Config 里会由元数据渲染的点路径联合类型 */
+export type ConfigKey = import('./params/schema').ParamKeyOf<ParamsConfig>;
+
 // ---------------------------------------------------------------------------
-// 参数预设 — 一键套用一组优化参数（存于 config.json 顶层 presets 字段）
+// 参数预设 — 一键套用一组参数（changes 的键为 ParamDef.key 点路径）
 // ---------------------------------------------------------------------------
 
 export interface ConfigPreset {
@@ -92,11 +313,27 @@ export interface ConfigPreset {
   desc: string;
   /** 适用环境 / 后端 / BIOS 等提示文案 */
   hint: string;
-  /** 覆盖的顶层配置字段（不含 presets 自身与用户私有项） */
-  config: Partial<Omit<Config, 'presets'>>;
-  /** 覆盖的 optional 子字段 */
-  optional?: Partial<OptionalConfig>;
+  /** 点路径 → 显式值；未列出的参数保持原值 */
+  changes: Partial<Record<ConfigKey, number | string | boolean | string[]>>;
 }
+
+// ---------------------------------------------------------------------------
+// 配置校验问题 — validateConfig 输出，启动前阻断 / UI 定位字段用
+// ---------------------------------------------------------------------------
+
+export interface ConfigIssue {
+  /** 点分隔字段路径，如 'server.models_dir' / 'model.ctx_size' */
+  field: string;
+  message: string;
+  severity: 'error' | 'warning';
+}
+
+// ---------------------------------------------------------------------------
+// IPC 响应封套 — 主进程所有 handle 统一返回 {ok,data|error}，
+//   渲染层 api.ts 解包后在失败时 throw，避免错误语义散落在各通道
+// ---------------------------------------------------------------------------
+
+export type IpcEnvelope<T> = { ok: true; data: T } | { ok: false; error: string };
 
 // ---------------------------------------------------------------------------
 // Server 进程状态
@@ -192,6 +429,7 @@ export interface ModelDownloadState {
   currentFile: string;
   downloadedBytes: number;
   downloadSize: number;
+  downloadSpeed: number;  // KB/s
   /** HTTPS 直链下载失败，提示改用 Python 工具 */
   httpFailed: boolean;
   files: ModelFile[];
@@ -206,15 +444,19 @@ export interface ModelDownloadState {
 
 export interface IpcChannelMap {
   'config:load': { response: Config };
-  'config:save': { request: Config; response: void };
-  'config:update': { request: { key: string; value: unknown }; response: void };
-  'server:start': { request: { args: string[] }; response: void };
+  /** 保存后返回主进程归一化的配置，渲染层以它为准（未知键/类型不符的字段会被清掉） */
+  'config:save': { request: Config; response: Config };
+  'config:update': { request: { key: string; value: unknown }; response: Config };
+  'config:validate': { request: Config; response: ConfigIssue[] };
+  'server:start': { response: void };
   'server:stop': { response: void };
+  'server:restart': { response: void };
   'server:get-state': { response: ServerState };
   'server:get-logs': { response: string[] };
   'server:get-command': { response: string };
   'server:preview-command': { request: Config; response: string };
   'server:on-log': { response: string };
+  'server:state-changed': { response: ServerState };
   'updater:check-latest': { response: { tag: string; releaseTag: string; size: number } };
   'updater:check-core-exists': { response: boolean };
   'updater:get-local-version': { response: string };
@@ -233,6 +475,12 @@ export interface IpcChannelMap {
   'model:get-progress': { response: ModelDownloadState };
   'model:set-proxy': { request: { proxy: string }; response: void };
   'model:cancel': { response: void };
+  // ----- 主进程推送 -----
+  'updater:progress': { response: UpdaterState };
+  'model:progress': { response: ModelDownloadState };
+  // ----- 系统对话框 -----
+  'dialog:open-folder': { response: string | null };
+  'dialog:open-file': { response: string | null };
 }
 
 // ---------------------------------------------------------------------------

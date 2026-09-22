@@ -1,6 +1,8 @@
 import { app, BrowserWindow, shell } from 'electron';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import { registerIpcHandlers } from './ipc-handlers';
+import { getServerManager } from './server';
 
 // =============================================================================
 // Electron 主入口 — 应用生命周期管理
@@ -34,12 +36,27 @@ function getRendererUrl(): string {
     // 与 vite.config.ts server.port 保持一致（5173 常被其他项目占用）
     return 'http://127.0.0.1:5174';
   }
-  return `file://${path.join(__dirname, '..', '..', 'dist-renderer', 'index.html')}`;
+  // pathToFileURL 会正确编码空格/中文等字符，裸拼 file:// 在含空格路径下会失效
+  return pathToFileURL(path.join(__dirname, '..', '..', 'dist-renderer', 'index.html')).href;
 }
 
 // ---------------------------------------------------------------------------
 // 创建主窗口
 // ---------------------------------------------------------------------------
+
+const DEV_SERVER_URL = 'http://127.0.0.1:5174';
+
+// sandbox 尝试开启；若 preload 在沙箱下加载失败（preload-error），
+// 回退 sandbox=false 重建一次窗口并记录日志
+let sandboxFallback = false;
+
+function isAllowedExternalUrl(url: string): boolean {
+  try {
+    return new URL(url).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -53,24 +70,53 @@ function createWindow(): void {
       preload: getPreloadPath(),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
+      sandbox: !sandboxFallback,
     },
   });
 
-  // 安全：禁止导航到外部 URL（内联链接用默认浏览器打开）
+  // 安全：弹窗一律拦截，仅 https 外链交给系统浏览器
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (isAllowedExternalUrl(url)) {
+      shell.openExternal(url).catch((err: unknown) => {
+        console.error('[App] openExternal 失败:', err);
+      });
+    }
     return { action: 'deny' };
   });
 
+  // 安全：禁止页面导航离开自身（拖拽文件、恶意链接等），dev 模式放行 HMR 重连
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const allowed = isDev() && url.startsWith(DEV_SERVER_URL);
+    if (!allowed) {
+      event.preventDefault();
+    }
+  });
+
+  if (!sandboxFallback) {
+    mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
+      console.error(`[App] preload 在 sandbox 下加载失败: ${preloadPath}`, error);
+      const broken = mainWindow;
+      // 先建新窗再销毁旧窗：若反过来，destroy 触发的 window-all-closed
+      // 会在重建前把整个应用退出
+      sandboxFallback = true;
+      mainWindow = null;
+      createWindow();
+      broken?.destroy();
+    });
+  }
+
   // CSP 安全策略
   if (isDev()) {
+    // dev 必须放行 inline：vite 注入到 <head> 最前部的 react-refresh preamble
+    // 是内联脚本，被 header CSP 拦下会让所有组件模块抛
+    // "@vitejs/plugin-react can't detect preamble" 导致白屏；
+    // 'unsafe-eval' 供 HMR/sourcemap 使用。生产构建无 preamble，保持严格策略
     mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
       callback({
         responseHeaders: {
           ...details.responseHeaders,
           'Content-Security-Policy': [
-            "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:* http://localhost:* ws://127.0.0.1:* http://127.0.0.1:*; img-src 'self' data:; font-src 'self' data:",
+            "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:* http://localhost:* ws://127.0.0.1:* http://127.0.0.1:*; img-src 'self' data:; font-src 'self' data:",
           ],
         },
       });
@@ -126,10 +172,28 @@ app.on('window-all-closed', () => {
   }
 });
 
+// 退出前终止 llama-server 子进程，避免遗留孤儿进程占用 GPU/内存
+//   stop() 内 taskkill 是异步的，直接同步退出会留下孤儿 —— 必须先阻止退出，
+//   等清理链完成（或 3s 超时兜底）再以 app.exit 强制离开
+let quitCleanupDone = false;
+app.on('before-quit', (event) => {
+  if (quitCleanupDone) return;
+  event.preventDefault();
+  const cleanup = getServerManager()
+    .destroy()
+    .catch((err: unknown) => console.error('[App] 退出前清理服务器失败:', err));
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 3000));
+  void Promise.race([cleanup, timeout]).finally(() => {
+    quitCleanupDone = true;
+    app.exit(0);
+  });
+});
+
 // 防止多实例
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  app.quit();
+  // app.quit() 会走本实例的 before-quit 流程造成时序混乱，直接退出进程
+  app.exit(0);
 } else {
   app.on('second-instance', () => {
     if (mainWindow) {

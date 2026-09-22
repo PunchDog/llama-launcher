@@ -38,6 +38,9 @@ files:
   - "!release/**"
   - "!dist/**"
   - "!_*/**"
+  # 运行时生成的配置备份/损坏快照，避免把用户配置打进分发包
+  - "!config.json.bak"
+  - "!config.json.bad-*.json"
 
 npmRebuild: false
 nodeGypRebuild: false

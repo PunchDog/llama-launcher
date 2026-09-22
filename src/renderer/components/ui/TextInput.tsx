@@ -9,6 +9,8 @@ interface TextInputProps {
   onChange: (v: string) => void;
   placeholder?: string;
   mono?: boolean;
+  /** 密钥输入：圆点显示，避免旁人看到 API Key */
+  password?: boolean;
   readOnly?: boolean;
   disabled?: boolean;
   title?: string;
@@ -21,6 +23,7 @@ export default function TextInput({
   onChange,
   placeholder,
   mono = false,
+  password = false,
   readOnly = false,
   disabled = false,
   title,
@@ -28,7 +31,7 @@ export default function TextInput({
 }: TextInputProps) {
   return (
     <input
-      type="text"
+      type={password ? 'password' : 'text'}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       onBlur={onBlur}

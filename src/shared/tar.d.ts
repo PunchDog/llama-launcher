@@ -1,5 +1,5 @@
 declare module 'tar' {
-  import { Writable, Readable } from 'stream';
+  import { Writable } from 'stream';
 
   interface FileStat {
     type: string;

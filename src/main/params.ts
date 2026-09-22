@@ -1,97 +1,55 @@
-import { Config } from '../shared/types';
-import { needsDraftModel } from '../shared/constants';
+import type { Config, ConfigIssue } from '../shared/types';
+import { ALL_PARAMS, buildArgs as buildArgsFromParams } from '../shared/params';
+import { validateParams } from '../shared/params/validate';
+
+// =============================================================================
+// buildArgs / validateConfig — llama-server 命令行与启动前校验的主进程入口
+//   参数表在 src/shared/params/groups/*.ts，这里只处理「无法用参数表表达」的两件事：
+//   本机 rpc-server 开关推导默认端点、以及把元数据校验转发出来。
+//   新增/修改参数一律改参数表，不要在本文件里硬编码 flag
+// =============================================================================
+
+/**
+ * 「启用本机 rpc-server」是应用层开关，而 llama-server 只认 --rpc 端点列表。
+ * 开关打开却没填端点时推导为本机监听地址，否则会出现「拉起了 rpc-server 却没让它参与推理」。
+ */
+function withDerivedRpcEndpoints(cfg: Config): Config {
+  const server = cfg.rpc.server;
+  const endpoints = cfg.rpc.endpoints ?? [];
+  if (!server.enabled || endpoints.length > 0) return cfg;
+  return { ...cfg, rpc: { ...cfg.rpc, endpoints: [`${server.host}:${server.port}`] } };
+}
 
 export function buildArgs(cfg: Config): string[] {
-  const args: string[] = [];
+  return buildArgsFromParams(ALL_PARAMS, withDerivedRpcEndpoints(cfg));
+}
 
-  // Required args
-  args.push('--models-dir', cfg.models_dir);
-  args.push('--models-max', String(cfg.models_max));
-  args.push('--timeout', String(cfg.timeout));
-  args.push('--host', cfg.host);
-  args.push('--port', String(cfg.port));
-  args.push('-ngl', String(cfg.ngl));
-  args.push('--flash-attn', cfg.flash_attn);
-  args.push('--cache-type-k', cfg.cache_type_k);
-  args.push('--cache-type-v', cfg.cache_type_v);
-  args.push('-t', String(cfg.threads));
-  args.push('-b', String(cfg.batch_size));
-  args.push('-c', String(cfg.ctx_size));
-  args.push('--n-predict', String(cfg.n_predict));
-  args.push('--parallel', String(cfg.parallel));
-  args.push('--metrics');
-  args.push('-tb', String(cfg.tensor_batch));
-  args.push('--kv-unified');
+export function validateConfig(cfg: Config): ConfigIssue[] {
+  return validateParams(cfg);
+}
 
-  // 投机解码 — 按 spec_type 分支生成
-  const specType = cfg.spec_type || 'none';
-  if (specType !== 'none') {
-    args.push('--spec-type', specType);
-    // draft-* 类需要草拟 token 上限；ngram-* 类不支持该参数
-    if (specType.startsWith('draft-') && cfg.mtp > 0) {
-      args.push('--spec-draft-n-max', String(cfg.mtp));
-    }
-    // 需要草稿模型文件的类型（DFlash2 走 draft-dflash + --spec-draft-model）
-    if (needsDraftModel(specType)) {
-      if (cfg.spec_draft_model) {
-        args.push('--spec-draft-model', cfg.spec_draft_model);
-      }
-      const draftNgl = cfg.spec_draft_ngl || 'auto';
-      if (draftNgl !== 'auto') {
-        args.push('--spec-draft-ngl', draftNgl);
-      }
-    }
+// =============================================================================
+// formatCmdline — 拼出可展示的命令行
+//   redactSecrets=true 时 --api-key 的值显示为 ***，预览与实际命令共用本函数，
+//   避免密钥出现在 UI / 日志里
+// =============================================================================
+
+export function formatCmdline(exePath: string, args: string[], redactSecrets = false): string {
+  // 密钥类参数由参数表按类型标记（secret），不在此处点名
+  const SECRET_FLAGS = new Set<string>();
+  for (const def of ALL_PARAMS) {
+    if (def.type !== 'secret') continue;
+    for (const token of [def.flag, def.negFlag]) if (token) SECRET_FLAGS.add(token);
   }
-
-  // 离线模式 — 阻止 llama-server 主动发起外部 HTTP 请求（如 HF 下载）
-  // 不加 --offline 因为 Router 模式需要 localhost 内部 HTTP 通信
-  // args.push('--offline');
-
-  // Optional args — only added when different from default
-  const opt = cfg.optional;
-  if (opt.model) args.push('--model', opt.model);
-  if (opt.cont_batching) args.push('--cont-batching');
-  if (opt.log_format) args.push('--log-format', opt.log_format);
-  if (opt.log_disable) args.push('--log-disable');
-  if (opt.verbose) args.push('--verbose');
-  if (opt.mlock) args.push('--mlock');
-  if (opt.no_mmap) args.push('--no-mmap');
-  if (opt.embedding) args.push('--embedding');
-  if (opt.pooling && opt.pooling !== 'none') args.push('--pooling', opt.pooling);
-  if (opt.rope_scaling) args.push('--rope-scaling', opt.rope_scaling);
-  if (opt.rope_freq_base > 0) args.push('--rope-freq-base', String(opt.rope_freq_base));
-  if (opt.rope_freq_scale > 0) args.push('--rope-freq-scale', opt.rope_freq_scale.toFixed(4));
-  if (opt.numa) args.push('--numa');
-  if (opt.low_vram) args.push('--low-vram');
-
-  // Sampling — only added when different from default
-  if (opt.tfs_z < 1.0) args.push('--tfs-z', opt.tfs_z.toFixed(2));
-  if (opt.top_k > 0 && opt.top_k !== 40) args.push('--top-k', String(opt.top_k));
-  if (opt.top_p > 0 && opt.top_p !== 0.95) args.push('--top-p', opt.top_p.toFixed(2));
-  if (opt.min_p > 0) args.push('--min-p', opt.min_p.toFixed(2));
-  if (opt.temperature > 0 && opt.temperature !== 0.8) args.push('--temperature', opt.temperature.toFixed(2));
-
-  // Penalties — only added when different from default
-  if (opt.repeat_penalty > 0 && opt.repeat_penalty !== 1.1) args.push('--repeat-penalty', opt.repeat_penalty.toFixed(2));
-  if (opt.repeat_last_n > 0 && opt.repeat_last_n !== 64) args.push('--repeat-last-n', String(opt.repeat_last_n));
-  if (opt.presence_penalty > 0) args.push('--presence-penalty', opt.presence_penalty.toFixed(2));
-  if (opt.frequency_penalty > 0) args.push('--frequency-penalty', opt.frequency_penalty.toFixed(2));
-
-  // API Key
-  if (cfg.api_key) args.push('--api-key', cfg.api_key);
-
-  // Chat template
-  if (opt.jinja) args.push('--jinja');
-  if (opt.chatTemplateKwargs) args.push('--chat-template-kwargs', opt.chatTemplateKwargs);
-
-  // RPC Server
-  if (cfg.rpc_server.enabled) {
-    args.push('--rpc-server');
-    args.push('--rpc-server-host', cfg.rpc_server.host);
-    args.push('--rpc-server-port', String(cfg.rpc_server.port));
-    args.push('--rpc-workers', String(cfg.rpc_server.workers));
-    args.push('--rpc-timeout', String(cfg.rpc_server.timeout));
+  const out: string[] = [exePath];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (redactSecrets && SECRET_FLAGS.has(a) && i + 1 < args.length) {
+      out.push(a, '***');
+      i++;
+      continue;
+    }
+    out.push(a);
   }
-
-  return args;
+  return out.map((a) => (a.includes(' ') ? `"${a}"` : a)).join(' ');
 }

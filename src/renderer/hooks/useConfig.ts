@@ -1,11 +1,11 @@
 // =============================================================================
-// useConfig — 配置状态管理 Hook
-//   通过 IPC 与主进程通信，管理 Config 的加载/保存/更新
+// useConfig — configStore 的薄适配层（P4 兼容旧调用点，P5 布局重构时删除）
+//   新代码请直接 useConfigStore / useParam。
 // =============================================================================
 
-import { useState, useCallback, useEffect } from 'react';
-import { Config } from '@/shared/types';
-import { invoke } from './api';
+import { useCallback, useEffect } from 'react';
+import type { Config } from '@/shared/types';
+import { useConfigStore } from '@/renderer/stores/configStore';
 
 interface UseConfigReturn {
   config: Config | null;
@@ -14,77 +14,37 @@ interface UseConfigReturn {
   loadConfig: () => Promise<void>;
   saveConfig: (cfg: Config) => Promise<void>;
   updateField: (key: string, value: unknown) => Promise<void>;
+  /** 立即把防抖窗口内的修改落盘（启动前调用） */
+  flushNow: () => Promise<boolean>;
 }
 
 export function useConfig(): UseConfigReturn {
-  const [config, setConfig] = useState<Config | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const config = useConfigStore((s) => s.config);
+  const loading = useConfigStore((s) => s.loading);
+  const error = useConfigStore((s) => s.error);
+  const load = useConfigStore((s) => s.load);
+  const replace = useConfigStore((s) => s.replace);
+  const setParam = useConfigStore((s) => s.setParam);
+  const flush = useConfigStore((s) => s.flushNow);
 
-  const loadConfig = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const cfg = await invoke('config:load');
-      setConfig(cfg);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      console.error('[useConfig] 加载配置失败:', msg);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const saveConfig = useCallback(
+    async (cfg: Config) => {
+      await replace(cfg);
+    },
+    [replace],
+  );
 
-  const saveConfig = useCallback(async (cfg: Config) => {
-    setError(null);
-    try {
-      await invoke('config:save', cfg);
-      setConfig(cfg);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      console.error('[useConfig] 保存配置失败:', msg);
-      throw err;
-    }
-  }, []);
+  const updateField = useCallback(
+    async (key: string, value: unknown) => {
+      setParam(key, value);
+    },
+    [setParam],
+  );
 
-  const updateField = useCallback(async (key: string, value: unknown) => {
-    setError(null);
-    try {
-      await invoke('config:update', { key, value });
-      // 乐观更新本地状态
-      setConfig((prev) => {
-        if (!prev) return prev;
-        const updated = JSON.parse(JSON.stringify(prev)) as Config;
-        const parts = key.split('.');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        let target: any = updated;
-        for (let i = 0; i < parts.length - 1; i++) {
-          target = target[parts[i]];
-        }
-        target[parts[parts.length - 1]] = value;
-        return updated;
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      console.error('[useConfig] 更新配置失败:', msg);
-      throw err;
-    }
-  }, []);
-
-  // 初始化加载配置
+  // bridge 已在启动时加载；这里兜住「bridge 尚未启动就渲染」的测试场景
   useEffect(() => {
-    loadConfig();
-  }, [loadConfig]);
+    if (!useConfigStore.getState().config && !useConfigStore.getState().loading) void load();
+  }, [load]);
 
-  return {
-    config,
-    loading,
-    error,
-    loadConfig,
-    saveConfig,
-    updateField,
-  };
+  return { config, loading, error, loadConfig: load, saveConfig, updateField, flushNow: flush };
 }

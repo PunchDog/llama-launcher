@@ -1,123 +1,52 @@
 // =============================================================================
-// useServer — 服务器状态管理 Hook
-//   管理 llama-server 进程状态、日志和启停操作
+// useServer — serverStore 的薄适配层（P4 兼容旧调用点，P5 布局重构时删除）
+//   日志已搬到 logsStore，本 hook 不再转发，避免每个订阅者各自持有副本。
 // =============================================================================
 
-import { useState, useCallback, useEffect } from 'react';
-import { Config, ServerState, ServerStateLabel } from '@/shared/types';
-import { invoke, on, removeAllListeners } from './api';
+import { useCallback } from 'react';
+import type { Config, ServerState } from '@/shared/types';
+import { ServerStateLabel } from '@/shared/types';
+import { useServerStore } from '@/renderer/stores/serverStore';
 
 interface UseServerReturn {
   state: ServerState;
   stateLabel: string;
-  logs: string[];
   loading: boolean;
   error: string | null;
-  startServer: (cfg: Config) => Promise<void>;
+  startServer: () => Promise<void>;
   stopServer: () => Promise<void>;
+  restartServer: () => Promise<void>;
   refreshState: () => Promise<void>;
-  clearLogs: () => void;
   getCommand: () => Promise<string>;
-  previewCommand: (cfg: Config) => Promise<string>;
+  previewCommand: (cfg?: Config) => Promise<string>;
 }
 
 export function useServer(): UseServerReturn {
-  const [state, setState] = useState<ServerState>(ServerState.Stopped);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const state = useServerStore((s) => s.state);
+  const loading = useServerStore((s) => s.busy);
+  const error = useServerStore((s) => s.error);
+  const start = useServerStore((s) => s.start);
+  const stop = useServerStore((s) => s.stop);
+  const restart = useServerStore((s) => s.restart);
+  const refresh = useServerStore((s) => s.refresh);
+  const getCmd = useServerStore((s) => s.getCommand);
+  const preview = useServerStore((s) => s.previewCommand);
 
-  // 实时日志监听
-  useEffect(() => {
-    const unsubscribe = on('server:on-log', (log: string) => {
-      setLogs((prev) => {
-        const next = [...prev, log];
-        // 环形缓冲区：最多 5000 条
-        if (next.length > 5000) {
-          return next.slice(-5000);
-        }
-        return next;
-      });
-    });
-
-    return () => {
-      unsubscribe();
-    };
-  }, []);
-
-  const refreshState = useCallback(async () => {
-    try {
-      const currentState = await invoke('server:get-state');
-      setState(currentState);
-    } catch (err) {
-      console.error('[useServer] 获取状态失败:', err);
-    }
-  }, []);
-
-  useEffect(() => {
-    refreshState();
-    const interval = setInterval(refreshState, 2000);
-    return () => clearInterval(interval);
-  }, [refreshState]);
-
-  const startServer = useCallback(
-    async (cfg: Config) => {
-      setLoading(true);
-      setError(null);
-      try {
-        await invoke('server:start', { args: [] });
-        setState(ServerState.Starting);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setError(msg);
-        console.error('[useServer] 启动失败:', msg);
-        throw err;
-      } finally {
-        setLoading(false);
-      }
-    },
+  const safe = useCallback(
+    (fn: () => Promise<void>): (() => Promise<void>) => () => fn().catch(() => undefined),
     [],
   );
-
-  const stopServer = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      await invoke('server:stop');
-      setState(ServerState.Stopping);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      console.error('[useServer] 停止失败:', msg);
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const getCommand = useCallback(async () => {
-    return await invoke('server:get-command');
-  }, []);
-
-  const previewCommand = useCallback(async (cfg: Config) => {
-    return await invoke('server:preview-command', cfg);
-  }, []);
-
-  const clearLogs = useCallback(() => {
-    setLogs([]);
-  }, []);
 
   return {
     state,
     stateLabel: ServerStateLabel[state] ?? '未知',
-    logs,
     loading,
     error,
-    startServer,
-    stopServer,
-    refreshState,
-    clearLogs,
-    getCommand,
-    previewCommand,
+    startServer: safe(start),
+    stopServer: safe(stop),
+    restartServer: safe(restart),
+    refreshState: refresh,
+    getCommand: getCmd,
+    previewCommand: preview,
   };
 }

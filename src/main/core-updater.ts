@@ -1,11 +1,10 @@
-import axios, { AxiosResponse } from 'axios';
+import axios from 'axios';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as zlib from 'zlib';
+import * as crypto from 'crypto';
 import { EventEmitter } from 'events';
-import tar from 'tar';
-import AdmZip from 'adm-zip';
-import { execSync, spawnSync } from 'child_process';
+import { Worker } from 'worker_threads';
+import { execFile } from 'child_process';
 import {
   ReleaseInfo,
   Asset,
@@ -14,20 +13,19 @@ import {
 import {
   GITHUB_API_URL,
   GITHUB_API_REPO_URL,
-  CORE_DIR_NAME,
-  DOWNLOAD_DIR_NAME,
   ARCH_LABEL,
   getBackendKeyword,
   getBackendLabel,
-  isBackendAvailable,
   type GpuBackend,
 } from '../shared/constants';
+import { resolveProxy, SpeedSampler, ghFetch, clearGhCache } from './net-util';
+import { isTargetBinary } from './archive-shared';
 
 // =============================================================================
 // 路径辅助 — 从 paths.ts 导入统一的基础路径
 // =============================================================================
 
-import { getAppBaseDir, getCoreDir, getDownloadDir, getServerExePath } from './paths';
+import { getCoreDir, getDownloadDir, getServerExePath } from './paths';
 
 export function CoreDir(): string { return getCoreDir(); }
 export function DownloadDir(): string { return getDownloadDir(); }
@@ -37,7 +35,12 @@ export function CheckCoreExists(): boolean {
   return fs.existsSync(getServerExePath());
 }
 
-export function GetLocalVersion(): string {
+/**
+ * 读取本地 llama-server 版本号。
+ * 异步 execFile：spawnSync + sleepSync 会冻结主进程事件循环最长 6 秒
+ * （日志流、下载进度、窗口交互全部停摆），必须避免。
+ */
+export async function GetLocalVersion(): Promise<string> {
   if (!CheckCoreExists()) return '未安装';
 
   const exePath = getServerExePath();
@@ -52,39 +55,50 @@ export function GetLocalVersion(): string {
       : coreDir;
   }
 
+  const execFileCapture = (
+    file: string,
+    args: string[],
+  ): Promise<{ stdout: string; stderr: string; err: string | null }> =>
+    new Promise((resolve) => {
+      execFile(
+        file,
+        args,
+        { timeout: 5000, encoding: 'utf-8', cwd: coreDir, env, windowsHide: true },
+        (error, stdout, stderr) => {
+          resolve({
+            stdout: stdout ?? '',
+            stderr: stderr ?? '',
+            // 非零退出码时仍取输出（llama.cpp 把版本号打在 stderr），
+            // 仅在真正 spawn 失败时记录错误
+            err: error ? error.message : null,
+          });
+        },
+      );
+    });
+
   // 刚更新完的 exe 可能被杀软短暂锁定导致 spawn 失败，重试一次
   const MAX_ATTEMPTS = 2;
-  let lastErr = '';
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      // llama.cpp 把版本号输出到 stderr；用 spawnSync 直接收 stderr，
-      // 不依赖 shell 的 2>&1 重定向，也不会因非零退出码抛异常
-      const result = spawnSync(exePath, ['--version'], {
-        timeout: 5000,
-        encoding: 'utf-8',
-        cwd: coreDir,
-        env,
-        windowsHide: true,
-      });
+    const result = await execFileCapture(exePath, ['--version']);
 
-      // 优先 stderr（llama.cpp 惯例），其次 stdout
-      const raw = (result.stderr || result.stdout || '').trim();
-      if (raw) {
-        const first = raw.split(/\r?\n/)[0] || '';
-        // 只显示构建号（如 "version: 6119 (b10964)" → "b10964"），
-        // 完整输出版本信息过长，不适合 UI 展示
-        const m = first.match(/\bb\d{3,}\b/i);
-        return m ? m[0].toLowerCase() : first;
-      }
-      lastErr = result.error ? result.error.message : `exit=${result.status}`;
-      console.error(`[GetLocalVersion] 第 ${attempt} 次无输出:`, lastErr);
-    } catch (err: unknown) {
-      lastErr = err instanceof Error ? err.message : String(err);
-      console.error(`[GetLocalVersion] 第 ${attempt} 次失败:`, lastErr);
+    // 优先 stderr（llama.cpp 惯例），其次 stdout
+    const raw = (result.stderr || result.stdout || '').trim();
+    if (raw) {
+      const first = raw.split(/\r?\n/)[0] || '';
+      // 只显示构建号（如 "version: 6119 (b10964)" → "b10964"），
+      // 完整输出版本信息过长，不适合 UI 展示
+      const m = first.match(/\bb\d{3,}\b/i);
+      return m ? m[0].toLowerCase() : first;
     }
+    console.error(
+      `[GetLocalVersion] 第 ${attempt} 次无输出:`,
+      result.err ?? 'empty output',
+    );
 
-    if (attempt < MAX_ATTEMPTS) sleepSync(800);
+    if (attempt < MAX_ATTEMPTS) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 800));
+    }
   }
 
   return '未知';
@@ -114,29 +128,9 @@ export function formatSize(bytes: number): string {
 }
 
 // =============================================================================
-// 代理地址解析
-// =============================================================================
-
-function extractProxyHost(proxyUrl: string): string {
-  try {
-    const u = new URL(proxyUrl);
-    return u.hostname;
-  } catch {
-    return '127.0.0.1';
-  }
-}
-
-function extractProxyPort(proxyUrl: string): number {
-  try {
-    const u = new URL(proxyUrl);
-    return parseInt(u.port, 10) || 7890;
-  } catch {
-    return 7890;
-  }
-}
-
-// =============================================================================
-// 压缩包辅助
+// 压缩包辅助 — 解压在独立 Worker 线程执行（见 extract-worker.ts），
+//   主进程只接收状态/结果消息；adm-zip 同步解压与文件占用重试
+//   不再冻结主进程事件循环（🟠17）
 // =============================================================================
 
 function getArchiveExt(name: string): string {
@@ -146,261 +140,63 @@ function getArchiveExt(name: string): string {
   return path.extname(name);
 }
 
-// =============================================================================
-// 7z magic 校验 (37 7A BC AF 27 1C)
-// =============================================================================
-
-function is7zFile(filePath: string): boolean {
-  try {
-    const fd = fs.openSync(filePath, 'r');
-    const buf = Buffer.alloc(6);
-    fs.readSync(fd, buf, 0, 6, 0);
-    fs.closeSync(fd);
-    return (
-      buf[0] === 0x37 && buf[1] === 0x7a && buf[2] === 0xbc &&
-      buf[3] === 0xaf && buf[4] === 0x27  && buf[5] === 0x1c
-    );
-  } catch {
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// isTargetBinary — 按平台判断是否为 llama.cpp 二进制/库文件
-//   Windows: .exe / .dll
-//   Linux:   无后缀可执行 (llama-* / rpc-* 等) / .so
-//   macOS:   无后缀可执行 / .so / .dylib
-// ---------------------------------------------------------------------------
-
-function isTargetBinary(fileName: string, stat?: { mode?: number }): boolean {
-  const lower = fileName.toLowerCase();
-  if (process.platform === 'win32') {
-    return lower.endsWith('.exe') || lower.endsWith('.dll');
-  }
-  // 共享库 (Linux / macOS) — 含版本后缀如 .so.0 / .so.0.0.0 / .dylib
-  if (/\.(so|dylib)(\.\d+)*$/.test(lower)) return true;
-  // 可执行文件 — 按已知 llama.cpp 二进制前缀匹配
-  if (/^(llama|rpc|ggml|test-|embedding|retrieval|quantize|perplexity|server|imatrix|tokenize|batched|bench|convert|finetune|save|export-lora)/.test(lower)) return true;
-  // tar.gz 流中有 stat，按可执行权限位兜底
-  if (stat?.mode && (stat.mode & 0o111) !== 0) return true;
-  return false;
-}
-
-/** 按平台生成「找不到二进制文件」的错误信息 */
-function noBinaryError(format: string): string {
-  const desc = process.platform === 'win32' ? 'exe/dll' : '可执行文件/共享库(.so)';
-  return `${format} 中未找到任何 ${desc} 文件`;
-}
-
 function copyFileSync(src: string, dst: string): void {
   fs.copyFileSync(src, dst);
 }
 
-// =============================================================================
-// 解压入口 — 根据扩展名分发
-// =============================================================================
+/** 优先 core/7za(win: .exe)，找不到则回退 PATH 中的 7z（由主进程解析，Worker 无 electron） */
+function resolveSevenZipExe(): string | undefined {
+  const name = process.platform === 'win32' ? '7za.exe' : '7za';
+  const local = path.join(CoreDir(), name);
+  return fs.existsSync(local) ? local : undefined;
+}
 
 async function extractArchive(
   src: string,
   dst: string,
   onStatus?: (msg: string) => void,
 ): Promise<void> {
-  const lower = src.toLowerCase();
-  if (lower.endsWith('.zip')) {
-    extractZipSync(src, dst, onStatus);
-  } else if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) {
-    await extractTarGz(src, dst, onStatus);
-  } else {
-    extract7zSync(src, dst, onStatus);
+  const workerPath = path.join(__dirname, 'extract-worker.js');
+  if (!fs.existsSync(workerPath)) {
+    throw new Error(`解压模块缺失: ${workerPath}，请重新构建应用`);
   }
-}
-
-// ---------------------------------------------------------------------------
-// extractZipSync
-//   Windows 上目标文件可能被占用（llama-server 运行中 / Defender 短暂锁定），
-//   逐条重试并显式上报失败，绝不允许静默跳过 — 否则旧二进制保留、
-//   版本探查读到旧版本号，用户会看到"更新完成"但版本未变
-// ---------------------------------------------------------------------------
-
-function sleepSync(ms: number): void {
-  // Atomics.wait 可在同步代码中休眠且不阻塞事件循环之外的东西
+  const worker = new Worker(workerPath);
   try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  } catch {
-    // 环境不支持时退化为忙等（仅重试场景，最多数百毫秒）
-    const end = Date.now() + ms;
-    while (Date.now() < end) { /* spin */ }
-  }
-}
-
-function extractZipSync(
-  src: string,
-  dst: string,
-  onStatus?: (msg: string) => void,
-): void {
-  const zip = new AdmZip(src);
-  const entries = zip.getEntries();
-  let count = 0;
-  const failed: string[] = [];
-  const MAX_ATTEMPTS = 3;
-
-  for (const entry of entries) {
-    if (entry.isDirectory) continue;
-    const baseName = path.basename(entry.entryName);
-    if (!isTargetBinary(baseName)) continue;
-
-    onStatus?.(`提取: ${baseName}`);
-
-    let ok = false;
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS && !ok; attempt++) {
-      try {
-        zip.extractEntryTo(entry, dst, false, true, false, baseName);
-        ok = true;
-        count++;
-      } catch (err: unknown) {
-        if (attempt < MAX_ATTEMPTS) {
-          onStatus?.(`提取 ${baseName} 失败（第 ${attempt} 次），重试中...`);
-          sleepSync(400);
-        } else {
-          const msg = err instanceof Error ? err.message : String(err);
-          failed.push(`${baseName}: ${msg}`);
-        }
-      }
-    }
-  }
-
-  if (count === 0) {
-    throw new Error(noBinaryError('zip'));
-  }
-  if (failed.length > 0) {
-    throw new Error(
-      `以下文件解压失败（文件可能被占用，请先停止正在运行的 llama-server 再更新）:\n${failed.join('\n')}`,
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// extractTarGz (async — tar.extract is stream-based)
-// ---------------------------------------------------------------------------
-
-async function extractTarGz(
-  src: string,
-  dst: string,
-  onStatus?: (msg: string) => void,
-): Promise<void> {
-  let count = 0;
-
-  await new Promise<void>((resolve, reject) => {
-    fs.createReadStream(src)
-      .pipe(zlib.createGunzip())
-      .pipe(
-        tar.extract({
-          cwd: dst,
-          filter: (_filePath: string, stat: tar.FileStat) => {
-            if (stat.type === 'Directory') return false;
-            const baseName = path.basename(_filePath);
-            if (!isTargetBinary(baseName, { mode: stat.mode as number | undefined })) return false;
-            onStatus?.(`提取: ${baseName}`);
-            count++;
-            return true;
-          },
-        }),
-      )
-      .on('finish', () => {
-        if (count === 0) {
-          reject(new Error(noBinaryError('tar.gz')));
-        } else {
-          resolve();
-        }
-      })
-      .on('error', (err: Error) => reject(err));
-  });
-}
-
-// ---------------------------------------------------------------------------
-// extract7zSync
-// ---------------------------------------------------------------------------
-
-function extract7zSync(
-  src: string,
-  dst: string,
-  onStatus?: (msg: string) => void,
-): void {
-  if (!is7zFile(src)) {
-    throw new Error(
-      `文件不是有效的 7z 格式，可能下载不完整，请删除 ${path.basename(src)} 后重试`,
-    );
-  }
-
-  // 优先 core/7za(win:.exe)，其次 PATH 中的 7z
-  let sevenZipExe: string;
-  const sevenZipName = process.platform === 'win32' ? '7za.exe' : '7za';
-  const local7za = path.join(CoreDir(), sevenZipName);
-  if (fs.existsSync(local7za)) {
-    sevenZipExe = local7za;
-  } else {
-    sevenZipExe = '7z';
-  }
-
-  onStatus?.('正在使用 7z 解压...');
-
-  // 列出包内文件，筛选目标二进制
-  let listOutput: string;
-  try {
-    listOutput = execSync(`"${sevenZipExe}" l -ba "${src}"`, {
-      encoding: 'utf-8',
-      timeout: 30000,
-    });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`7z 列表失败: ${msg}`);
-  }
-
-  const targetNames: string[] = [];
-  for (const line of listOutput.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    // 7z l 输出格式: "....A ....          123456  2024-01-01 00:00:00  path/to/file.exe"
-    // 使用正则表达式提取文件名（从最后日期时间后的空格开始）
-    const match = trimmed.match(/^[.\s]+[.\s]+\s+\d+\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+(.+)$/);
-    if (!match || !match[1]) continue;
-    const filePath = match[1].trim();
-    if (isTargetBinary(path.basename(filePath))) {
-      targetNames.push(filePath);
-    }
-  }
-
-  if (targetNames.length === 0) {
-    throw new Error(noBinaryError('7z'));
-  }
-
-  // 逐个提取
-  for (const name of targetNames) {
-    const baseName = path.basename(name);
-    const targetPath = path.join(dst, baseName);
-    onStatus?.(`提取: ${baseName}`);
-
-    try {
-      execSync(`"${sevenZipExe}" x -y -o"${dst}" "${src}" "${name}"`, {
-        encoding: 'utf-8',
-        stdio: 'pipe',
-        timeout: 60000,
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+      worker.on('message', (msg: { type: string; msg?: string; message?: string }) => {
+        if (msg.type === 'status') onStatus?.(msg.msg ?? '');
+        else if (msg.type === 'done') settle(resolve);
+        else if (msg.type === 'error') settle(() => reject(new Error(msg.message ?? '解压失败')));
       });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`7z 提取 ${baseName} 失败: ${msg}`);
-    }
-
-    // 若被解压到子目录，移动到根
-    const extractedPath = path.join(dst, name);
-    if (extractedPath !== targetPath && fs.existsSync(extractedPath)) {
-      try {
-        fs.renameSync(extractedPath, targetPath);
-      } catch {
-        copyFileSync(extractedPath, targetPath);
-      }
-    }
+      worker.on('error', (err) => settle(() => reject(err)));
+      worker.on('exit', (code) => {
+        if (code !== 0) settle(() => reject(new Error(`解压线程异常退出 (code=${code})`)));
+      });
+      worker.postMessage({ op: 'extract', src, dst, sevenZipExe: resolveSevenZipExe() });
+    });
+  } finally {
+    await worker.terminate().catch(() => undefined);
   }
+}
+
+// =============================================================================
+// 流式 SHA256 — 数百 MB 包不整读进内存
+// =============================================================================
+
+function sha256File(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (d: Buffer) => hash.update(d));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', (err: Error) => reject(err));
+  });
 }
 
 // =============================================================================
@@ -445,12 +241,23 @@ export class CoreUpdater extends EventEmitter {
   selectedOS = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'darwin' : 'linux';
   selectedBackend: GpuBackend = 'vulkan';
   proxyUrl = '';     // HTTP 代理地址，如 http://127.0.0.1:7890
+  /** release 中 `<资产名>.sha256` 校验文件的下载地址（llama.cpp 目前不附带，存在则强制校验） */
+  sha256URL = '';
 
-  // 下载速度计算
-  private _lastBytes = 0;
-  private _lastTime = 0;
+  // 下载速度计算（0.5s 增量采样，见 net-util.SpeedSampler）
+  private sampler = new SpeedSampler();
+  // 进度推送节流：渲染层从 500ms 轮询改为事件推送，200ms 节流防消息风暴
+  private lastProgressEmit = 0;
 
   // ----- getters / setters -----
+
+  /** 向 IPC 层推送最新状态（200ms 节流；force=true 用于状态迁移点立即出货） */
+  private emitProgress(force = false): void {
+    const now = Date.now();
+    if (!force && now - this.lastProgressEmit < 200) return;
+    this.lastProgressEmit = now;
+    this.emit('progress', this.getState());
+  }
 
   getProgress(): number {
     return this.progress;
@@ -486,6 +293,7 @@ export class CoreUpdater extends EventEmitter {
     this.progress = p;
     if (downloadedKB !== undefined) this.downloadedBytes = downloadedKB * 1024;
     if (totalKB !== undefined) this.downloadSize = totalKB * 1024;
+    this.emitProgress();
   }
 
   setStatus(s: string): void {
@@ -494,6 +302,7 @@ export class CoreUpdater extends EventEmitter {
     // 状态变化时发出日志，供 LogViewer 页面展示（ipc-handlers 加 [core] 前缀转发）
     if (changed && s) {
       this.emit('log', s);
+      this.emitProgress(true);
     }
   }
 
@@ -501,12 +310,17 @@ export class CoreUpdater extends EventEmitter {
     this.error = e;
     this.status = `❌ ${e}`;
     this.emit('log', `❌ ${e}`);
+    this.emitProgress(true);
   }
 
   // ----- proxy -----
 
   setProxy(url: string): void {
-    this.proxyUrl = url;
+    if (url !== this.proxyUrl) {
+      this.proxyUrl = url;
+      // 换代理后出口 IP 变化，ETag 缓存与限流计数应重来
+      clearGhCache();
+    }
   }
 
   // ----- fetchLatestRelease -----
@@ -518,30 +332,18 @@ export class CoreUpdater extends EventEmitter {
     };
   }
 
-  private axiosProxyConfig() {
-    return this.proxyUrl
-      ? { host: extractProxyHost(this.proxyUrl), port: extractProxyPort(this.proxyUrl), protocol: 'http' }
-      : false;
+  private proxyCfg() {
+    return resolveProxy(this.proxyUrl);
   }
 
-  /** 请求指定 GitHub release API 端点 */
+  /** 请求指定 GitHub release API 端点（ghFetch：ETag 条件缓存 + 403/429 限流处理） */
   private async fetchRelease(url: string, label: string): Promise<ReleaseInfo> {
-    let resp: AxiosResponse<ReleaseInfo>;
     try {
-      resp = await axios.get<ReleaseInfo>(url, {
-        headers: this.axiosHeaders(),
-        timeout: 30000,
-        proxy: this.axiosProxyConfig(),
-      });
+      return await ghFetch<ReleaseInfo>(url, this.proxyCfg());
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`请求 GitHub API 失败 (${label}): ${msg}`);
+      throw new Error(`${label}: ${msg}`, { cause: err });
     }
-
-    if (resp.status !== 200) {
-      throw new Error(`GitHub API 返回 ${resp.status} (${label})`);
-    }
-    return resp.data;
   }
 
   /** 在资产列表中按平台关键词匹配二进制资产 */
@@ -562,7 +364,7 @@ export class CoreUpdater extends EventEmitter {
           headers: this.axiosHeaders(),
           responseType: 'text',
           timeout: 15000,
-          proxy: this.axiosProxyConfig(),
+          proxy: this.proxyCfg(),
         });
         const tag = String(resp.data).trim();
         if (/^b\d+$/.test(tag)) return tag;
@@ -590,6 +392,7 @@ export class CoreUpdater extends EventEmitter {
     // 第一段：releases/latest（现为语义化版本，如 v0.4.1）
     const release = await this.fetchRelease(GITHUB_API_URL, 'latest');
     let matched = this.matchAsset(release.assets, keyword);
+    let matchedAssets: Asset[] = release.assets;
     this.latestReleaseTag = release.tag_name;
 
     if (matched) {
@@ -611,12 +414,17 @@ export class CoreUpdater extends EventEmitter {
           `nightly ${nightlyTag} 中未找到 ${GetBackendLabel(osName, backend)} 版本 (关键词: ${keyword})`,
         );
       }
+      matchedAssets = nightly.assets;
       this.latestTag = nightly.tag_name;
     }
 
     this.downloadURL = matched.browser_download_url;
     this.downloadSize = matched.size;
     this.assetName = matched.name;
+    // sha256 sidecar：若 release 附带 `<资产名>.sha256` 则记录地址，下载后强制校验
+    const sidecarName = `${matched.name}.sha256`;
+    const sidecar = matchedAssets.find((a) => a.name === sidecarName);
+    this.sha256URL = sidecar?.browser_download_url ?? '';
     const tagDesc =
       this.latestTag === this.latestReleaseTag
         ? this.latestTag
@@ -637,9 +445,8 @@ export class CoreUpdater extends EventEmitter {
     this.progress = 0;
     this.error = '';
     this.setStatus('准备中...');
+    this.sampler.reset();
     this.downloadSpeed = 0;
-    this._lastBytes = 0;
-    this._lastTime = 0;
 
     try {
       let url = this.downloadURL;
@@ -672,38 +479,39 @@ export class CoreUpdater extends EventEmitter {
       if (!cached) {
         this.setStatus(`正在下载 ${localFileName} ...`);
 
+        // 先写入 .part 临时文件，完成后再 rename 为正式文件名；
+        // 中途失败的残包不会被下一轮当作有效缓存直接解压
+        const partFile = `${downloadFile}.part`;
         const response = await axios.get(url, {
           responseType: 'stream',
           timeout: 0,
-          proxy: this.proxyUrl ? { host: extractProxyHost(this.proxyUrl), port: extractProxyPort(this.proxyUrl), protocol: 'http' } : false,
+          proxy: this.proxyCfg(),
         });
 
         if (response.status !== 200) {
           throw new Error(`下载返回 ${response.status}`);
         }
 
-        const writer = fs.createWriteStream(downloadFile);
-        let totalSize =
+        const writer = fs.createWriteStream(partFile);
+        const totalSize =
           parseInt(String(response.headers['content-length']), 10) ||
           this.downloadSize;
         let downloaded = 0;
 
         await new Promise<void>((resolve, reject) => {
+          // 显式失败标志：流/写盘任一报错后，close 回调绝不允许把残包
+          // rename 成有效缓存名（否则下一轮直接解压坏包），必须删除 .part
+          let failed = false;
+          const fail = (err: Error) => {
+            if (!failed) {
+              failed = true;
+              reject(err);
+            }
+          };
+
           response.data.on('data', (chunk: Buffer) => {
             downloaded += chunk.length;
-            const now = Date.now();
-            if (this._lastTime === 0) {
-              this._lastTime = now;
-              this._lastBytes = downloaded;
-            } else {
-              const elapsed = (now - this._lastTime) / 1000; // 秒
-              const diffBytes = downloaded - this._lastBytes;
-              if (elapsed > 0) {
-                this.downloadSpeed = Math.round((diffBytes / 1024) / elapsed); // KB/s
-              }
-              this._lastTime = now;
-              this._lastBytes = downloaded;
-            }
+            this.downloadSpeed = this.sampler.update(downloaded);
             if (totalSize > 0) {
               this.setProgress(
                 (downloaded / totalSize) * 100,
@@ -715,22 +523,68 @@ export class CoreUpdater extends EventEmitter {
             }
           });
 
-          response.data.on('end', () => {
-            this.setProgress(
-              100,
-              Math.floor(downloaded / 1024),
-              totalSize > 0 ? Math.floor(totalSize / 1024) : 0,
-            );
-            resolve();
+          response.data.on('error', (err: Error) => {
+            fail(err);
+            writer.destroy();
           });
 
-          response.data.on('error', (err: Error) => {
-            writer.close();
-            reject(err);
+          writer.on('error', (err: Error) => {
+            fail(err);
+            writer.destroy();
+          });
+
+          // writer 'close' 在所有数据落盘后触发，此时 rename 才不会
+          // 在 Windows 上因文件句柄未释放而失败
+          writer.on('close', () => {
+            if (failed) {
+              // 残包绝不进入缓存文件名，删除 .part 后由外层展示错误
+              try {
+                fs.unlinkSync(partFile);
+              } catch {
+                // 文件可能不存在
+              }
+              return;
+            }
+            if (totalSize > 0 && downloaded < totalSize) {
+              try {
+                fs.unlinkSync(partFile);
+              } catch {
+                // ignore
+              }
+              reject(
+                new Error(
+                  `下载不完整（${downloaded}/${totalSize} 字节），已丢弃残包，请重试`,
+                ),
+              );
+              return;
+            }
+            try {
+              fs.renameSync(partFile, downloadFile);
+              resolve();
+            } catch (err) {
+              reject(err);
+            }
           });
 
           response.data.pipe(writer);
         });
+      }
+
+      // sha256 校验（release 附带 sidecar 时）：缓存包同样校验，防坏包长期驻留
+      if (this.sha256URL) {
+        this.setStatus('正在校验 SHA256...');
+        const expected = await this.fetchExpectedSha256();
+        const actual = await sha256File(downloadFile);
+        if (actual !== expected) {
+          try {
+            fs.unlinkSync(downloadFile);
+          } catch {
+            // ignore
+          }
+          throw new Error(
+            `SHA256 校验失败（期望 ${expected.slice(0, 12)}… 实际 ${actual.slice(0, 12)}…），已删除坏包，请重试`,
+          );
+        }
       }
 
       // 解压
@@ -757,7 +611,20 @@ export class CoreUpdater extends EventEmitter {
       throw err;
     } finally {
       this.isDownloading = false;
+      this.emitProgress(true);
     }
+  }
+
+  /** 下载 sidecar 文本并解析首个 64 位十六进制哈希 */
+  private async fetchExpectedSha256(): Promise<string> {
+    const resp = await axios.get<string>(this.sha256URL, {
+      responseType: 'text',
+      timeout: 15000,
+      proxy: this.proxyCfg(),
+    });
+    const m = String(resp.data).trim().match(/\b[0-9a-f]{64}\b/i);
+    if (!m) throw new Error('SHA256 校验文件内容无法解析');
+    return m[0].toLowerCase();
   }
 
   // ----- extractSpecific -----
@@ -773,12 +640,21 @@ export class CoreUpdater extends EventEmitter {
     this.setStatus('准备解压...');
 
     try {
-      const downloadFile = path.join(DownloadDir(), filename);
+      // filename 来自渲染进程，可能是任意字符串：仅取 basename 防止路径穿越，
+      // 并确认解析后的路径确实位于 downloads 目录内
+      const safeName = path.basename(filename);
+      const downloadFile = path.join(DownloadDir(), safeName);
+      if (
+        safeName !== filename ||
+        !downloadFile.startsWith(DownloadDir() + path.sep)
+      ) {
+        throw new Error(`非法文件名: ${filename}`);
+      }
       if (!fs.existsSync(downloadFile)) {
         throw new Error(`文件不存在: ${filename}`);
       }
 
-      this.setStatus(`正在解压 ${filename} ...`);
+      this.setStatus(`正在解压 ${safeName} ...`);
       const coreDir = CoreDir();
       fs.mkdirSync(coreDir, { recursive: true });
 
@@ -799,6 +675,7 @@ export class CoreUpdater extends EventEmitter {
       throw err;
     } finally {
       this.isDownloading = false;
+      this.emitProgress(true);
     }
   }
 }

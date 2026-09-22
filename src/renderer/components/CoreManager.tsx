@@ -1,34 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useUpdater } from '../hooks/useUpdater';
 import { useConfig } from '../hooks/useConfig';
+import { effectiveProxy } from '@/shared/proxy';
 import VersionCompare from './VersionCompare';
 import { Section, TextInput, SelectInput, Switch, Button } from './ui';
+import { formatSize, formatSpeed } from '../utils/format';
 
 const BACKEND_OPTIONS = [
   { value: 'vulkan', label: 'Vulkan（通用，跨平台）' },
   { value: 'rocm', label: 'ROCm（仅 Linux）' },
 ] as const;
-
-// ---------------------------------------------------------------------------
-// formatSize — 复用 main 端的逻辑
-// ---------------------------------------------------------------------------
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
-/** 动态格式化速度单位：根据数值大小自动切换 B/s, KB/s, MB/s, GB/s */
-function formatSpeed(kbps: number): string {
-  if (kbps <= 0) return '0 B/s';
-  const bytesPerSec = kbps * 1024;
-  if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`;
-  if (bytesPerSec < 1024 * 1024) return `${kbps.toFixed(1)} KB/s`;
-  if (bytesPerSec < 1024 * 1024 * 1024) return `${(kbps / 1024).toFixed(2)} MB/s`;
-  return `${(kbps / (1024 * 1024)).toFixed(2)} GB/s`;
-}
 
 export default function CoreManager() {
   const {
@@ -55,36 +36,37 @@ export default function CoreManager() {
   const [proxyInput, setProxyInput] = useState<string>('');
 
   // 从 config 同步代理状态
-  const useProxy = config?.proxy_enabled ?? true;
+  const useProxy = config?.proxy.enabled ?? true;
   const proxySavedRef = useRef(useProxy);
 
   useEffect(() => {
-    if (config?.proxy_url && config.proxy_url !== proxyInput) {
-      setProxyInput(config.proxy_url);
+    const saved = config?.proxy.url;
+    if (saved && saved !== proxyInput) {
+      setProxyInput(saved);
     }
-  }, [config?.proxy_url]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [config?.proxy.url]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 保存代理开关
   const handleProxyToggle = useCallback(
     (checked: boolean) => {
       proxySavedRef.current = checked;
-      updateField('proxy_enabled', checked);
+      updateField('proxy.enabled', checked);
     },
     [updateField],
   );
 
   // 失焦时保存代理地址
   const handleProxySave = useCallback(() => {
-    if (proxyInput !== (config?.proxy_url ?? '')) {
-      updateField('proxy_url', proxyInput);
+    if (proxyInput !== (config?.proxy.url ?? '')) {
+      updateField('proxy.url', proxyInput);
     }
-  }, [proxyInput, config?.proxy_url, updateField]);
+  }, [proxyInput, config?.proxy.url, updateField]);
 
-  // 解析实际代理地址
-  const getProxy = useCallback(() => {
-    if (!useProxy) return '';
-    return proxyInput.trim() || 'http://127.0.0.1:7890';
-  }, [useProxy, proxyInput]);
+  // 解析实际代理地址（规则唯一来源：shared/proxy.ts）
+  const getProxy = useCallback(
+    () => effectiveProxy({ proxy: { enabled: useProxy, url: proxyInput } }),
+    [useProxy, proxyInput],
+  );
 
   // 初始化：检查 Core 是否存在 & 获取本地版本
   const refreshStatus = useCallback(async () => {
@@ -112,12 +94,8 @@ export default function CoreManager() {
 
   // 检查最新版本
   const handleCheckLatest = async () => {
-    // 仅当显式配置了代理地址时才传入（不传默认值，避免 127.0.0.1:7890 不可达导致失败）
-    if (config?.proxy_enabled && config?.proxy_url) {
-      await setProxy(config.proxy_url);
-    } else if (!config?.proxy_enabled) {
-      await setProxy('');
-    }
+    // 无条件同步：留空/关闭时必须把主进程里上一次的代理设置清掉，否则残留生效
+    await setProxy(getProxy());
     setLatestTag('查询中...');
     setLatestReleaseTag('');
     const result = await checkLatest();
@@ -132,11 +110,8 @@ export default function CoreManager() {
   // 更新 Core
   const handleUpdate = async () => {
     try {
-      // 应用代理设置
-      const proxy = getProxy();
-      if (proxy) {
-        await setProxy(proxy);
-      }
+      // 应用代理设置（含清空）
+      await setProxy(getProxy());
       if (selectedFile === '最新版本') {
         await downloadAndExtract();
         setLatestTag(updater.latestTag || '-');
@@ -174,7 +149,13 @@ export default function CoreManager() {
         {/* HTTP 代理 */}
         <Section
           title="网络代理"
-          desc={useProxy ? `下载将通过代理进行${proxyInput.trim() ? '' : '（使用默认地址）'}` : '未启用代理'}
+          desc={
+            useProxy
+              ? proxyInput.trim()
+                ? `下载将通过代理 ${proxyInput.trim()} 进行`
+                : '已开启代理但未填写地址，将直连'
+              : '未启用代理'
+          }
         >
           <div className="space-y-2">
             <Switch label="启用代理" checked={useProxy} onChange={handleProxyToggle} />
@@ -182,7 +163,7 @@ export default function CoreManager() {
               value={proxyInput}
               onChange={setProxyInput}
               onBlur={handleProxySave}
-              placeholder="http://127.0.0.1:7890（留空则使用默认）"
+              placeholder="http://127.0.0.1:7890（留空则直连）"
               disabled={!useProxy}
             />
           </div>

@@ -39,3 +39,7 @@ Thumbs.db
 
 # logs
 *.log
+
+# 配置备份与损坏快照（运行时产物）
+config.json.bak
+config.json.bad-*.json
