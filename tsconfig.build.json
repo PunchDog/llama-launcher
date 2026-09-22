@@ -1,0 +1,7 @@
+{
+  // 构建专用：从 tsconfig.main.json 排除 preload —— dist-electron/preload/index.js
+  // 由 esbuild 单文件打包产出（sandbox 化 preload 只能 require 打包内的模块）。
+  // 类型检查仍走 tsconfig.main.json，preload 源码覆盖不丢。
+  "extends": "./tsconfig.main.json",
+  "exclude": ["node_modules", "src/renderer", "src/preload/**/*"]
+}
