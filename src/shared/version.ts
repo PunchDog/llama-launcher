@@ -83,38 +83,11 @@ export function parseVersionInfo(str: string): VersionInfo | null {
   return null;
 }
 
-/** 无法解析 build 号时返回 null（旧接口，语义化版本字符串会返回 null） */
-export function parseBuildNumber(str: string): number | null {
-  const info = parseVersionInfo(str);
-  return info?.kind === 'build' ? info.num : null;
-}
-
 function compareSemver(a: SemverInfo, b: SemverInfo): number {
   for (const key of ['major', 'minor', 'patch'] as const) {
     if (a[key] !== b[key]) return a[key] - b[key];
   }
   return 0;
-}
-
-/**
- * 比较本地版本与最新版本：
- *   - 双方同为语义化版本 → 逐段比较 major/minor/patch
- *   - 双方同为 build 号   → 比较纯数字
- *   - 版本体系不同或任一解析失败 → 'unknown'
- */
-export function compareVersions(local: string, latest: string): CompareResult {
-  const localInfo = parseVersionInfo(local);
-  const latestInfo = parseVersionInfo(latest);
-
-  if (!localInfo || !latestInfo) return 'unknown';
-
-  if (localInfo.kind === 'semver' && latestInfo.kind === 'semver') {
-    return compareSemver(localInfo, latestInfo) >= 0 ? 'up-to-date' : 'outdated';
-  }
-  if (localInfo.kind === 'build' && latestInfo.kind === 'build') {
-    return localInfo.num >= latestInfo.num ? 'up-to-date' : 'outdated';
-  }
-  return 'unknown';
 }
 
 /**

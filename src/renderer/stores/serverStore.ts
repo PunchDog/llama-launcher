@@ -9,6 +9,7 @@ import type { Config, ServerState } from '@/shared/types';
 import { invoke } from '@/renderer/hooks/api';
 import { useConfigStore } from './configStore';
 import { showToast } from './uiStore';
+import { errMsg } from '@/shared/errors';
 
 interface ServerStore {
   state: ServerState;
@@ -19,14 +20,12 @@ interface ServerStore {
   refresh: () => Promise<void>;
   start: () => Promise<void>;
   stop: () => Promise<void>;
-  restart: () => Promise<void>;
-  getCommand: () => Promise<string>;
   previewCommand: (cfg?: Config) => Promise<string>;
 }
 
 export const useServerStore = create<ServerStore>((set) => {
   /** 真正执行一次启停：先把未落盘的配置冲刷掉，否则主进程读到的是旧值 */
-  async function run(action: 'start' | 'stop' | 'restart'): Promise<void> {
+  async function run(action: 'start' | 'stop'): Promise<void> {
     set({ busy: true, error: null });
     try {
       if (action !== 'stop' && !(await useConfigStore.getState().flushNow())) {
@@ -35,7 +34,7 @@ export const useServerStore = create<ServerStore>((set) => {
       await invoke(`server:${action}`);
       // 主进程随后会推 server:state-changed，这里不自己猜状态
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errMsg(err);
       set({ error: msg, busy: false });
       showToast('error', msg);
       throw err;
@@ -61,9 +60,6 @@ export const useServerStore = create<ServerStore>((set) => {
 
     start: () => run('start'),
     stop: () => run('stop'),
-    restart: () => run('restart'),
-
-    getCommand: async () => await invoke('server:get-command'),
 
     previewCommand: async (cfg) => {
       const target = cfg ?? useConfigStore.getState().config;

@@ -10,8 +10,10 @@ import { ServerState, Config } from '../shared/types';
 import { MAX_LOG_BUFFER } from '../shared/constants';
 import { effectiveValue } from '../shared/params';
 import { buildArgs, validateConfig, formatCmdline } from './params';
-import { killTree, killTreeSync } from './process-kill';
+import { killTree } from './process-kill';
 import { getCoreDir, getServerExePath, getAppBaseDir } from './paths';
+import { prependCoreLibPath } from './child-env';
+import { errMsg } from '../shared/errors';
 
 // =============================================================================
 // Server 进程管理器 — 日志处理通过 Worker 线程卸荷，避免阻塞事件循环
@@ -42,11 +44,7 @@ function buildChildEnv(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
   // 非 Windows：把 core 目录加入 LD_LIBRARY_PATH，确保 llama-server
   // 能找到同目录的 libggml.so / libllama.so 等共享库
-  if (os.platform() !== 'win32') {
-    const coreDir = getCoreDir();
-    const existing = env.LD_LIBRARY_PATH || '';
-    env.LD_LIBRARY_PATH = existing ? `${coreDir}:${existing}` : coreDir;
-  }
+  prependCoreLibPath(env, getCoreDir());
 
   return env;
 }
@@ -54,15 +52,14 @@ function buildChildEnv(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export class LlamaServerManager extends EventEmitter {
   private process: ChildProcess | null = null;
   private rpcProcess: ChildProcess | null = null;
+  /** stopRpcServer 发起的异步进程树终止；stop/destroy 收尾时 await 它 */
+  private rpcKill: Promise<void> = Promise.resolve();
   private state: ServerState = ServerState.Stopped;
 
   // ---- 日志 Worker ----
   private logWorker: Worker | null = null;
   private logBuffer: string[] = [];
   private workerReady = false;
-
-  // ---- 最后执行的完整命令 ----
-  private lastCommand = '';
 
   constructor() {
     super();
@@ -106,7 +103,7 @@ export class LlamaServerManager extends EventEmitter {
       });
 
       this.logWorker.on('error', (err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = errMsg(err);
         console.error('[Server] Log Worker 异常:', msg);
         // Worker 挂了也不 crash，降级为直接处理
         this.logWorker = null;
@@ -139,14 +136,9 @@ export class LlamaServerManager extends EventEmitter {
     return [...this.logBuffer];
   }
 
-  getCommand(): string {
-    return this.lastCommand;
-  }
-
   /** 根据当前配置预览命令行（无需启动服务器；密钥脱敏） */
   previewCommand(cfg: Config): string {
-    const exePath = this.resolveExecutablePath();
-    return formatCmdline(exePath, buildArgs(cfg), true);
+    return formatCmdline(getServerExePath(), buildArgs(cfg), true);
   }
 
   // ---------------------------------------------------------------------------
@@ -170,7 +162,7 @@ export class LlamaServerManager extends EventEmitter {
       return errMsg;
     }
 
-    const exePath = this.resolveExecutablePath();
+    const exePath = getServerExePath();
 
     // 文件存在性检查
     if (!fs.existsSync(exePath)) {
@@ -205,9 +197,6 @@ export class LlamaServerManager extends EventEmitter {
 
   private doStart(cfg: Config, exePath: string): void {
     const args = buildArgs(cfg);
-
-    // 保存完整命令行供 UI 展示（与实际执行同源，密钥脱敏）
-    this.lastCommand = formatCmdline(exePath, args, true);
 
     // 清空本地日志缓冲并通知 Worker 重置（上一轮日志不再回灌）
     this.logBuffer = [];
@@ -269,7 +258,7 @@ export class LlamaServerManager extends EventEmitter {
         this.process = null;
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errMsg(err);
       this.appendLog(`[error] spawn 失败: ${message}`);
       this.setState(ServerState.Stopped);
       this.stopRpcServer();
@@ -413,7 +402,7 @@ export class LlamaServerManager extends EventEmitter {
           }
         }, 20000);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errMsg(err);
         this.appendLog(`[error] RPC Server 启动失败: ${message}`);
         finish(false);
       }
@@ -428,32 +417,24 @@ export class LlamaServerManager extends EventEmitter {
     this.rpcProcess = null;
     const pid = child.pid;
     if (os.platform() === 'win32' && pid) {
-      // 同步等待 taskkill 完成：运行中停止与退出清理两条路径都要求
-      // 函数返回后 rpc-server 进程树必然已死，不能 fire-and-forget
-      killTreeSync(pid);
+      // 异步 taskkill（spawnSync 最长冻结主进程 10s）；需要「rpc-server
+      // 进程树已死」保证的调用点 await this.rpcKill，不能 fire-and-forget
+      this.rpcKill = killTree(pid).then(() => undefined);
     } else {
       try {
         child.kill();
       } catch {
         // 进程可能已退出
       }
+      this.rpcKill = Promise.resolve();
     }
   }
 
   // ---------------------------------------------------------------------------
-  // stop — 关闭进程；async 版本保证返回时子进程树已终止
-  //   公开 stop 会作废排队中的 restart（🟠8）：restart = 序列号保护的
-  //   doStop + start，停机期间用户再点停止则不再拉起
+  // stop — 关闭进程；保证返回时子进程树已终止
   // ---------------------------------------------------------------------------
 
-  private restartSeq = 0;
-
   async stop(): Promise<void> {
-    this.restartSeq++;
-    await this.doStop();
-  }
-
-  private async doStop(): Promise<void> {
     if (this.state === ServerState.Stopped) {
       return;
     }
@@ -463,6 +444,7 @@ export class LlamaServerManager extends EventEmitter {
       if (this.rpcProcess || this.state === ServerState.Starting) {
         this.setState(ServerState.Stopping);
         this.stopRpcServer();
+        await this.rpcKill;
         this.setState(ServerState.Stopped);
         this.emit('stopped', { code: null, signal: null });
       }
@@ -518,37 +500,7 @@ export class LlamaServerManager extends EventEmitter {
       this.emit('stopped', { code: null, signal: null });
     }
     this.stopRpcServer();
-  }
-
-  // ---------------------------------------------------------------------------
-  // restart — 停机后重新拉起；停机期间用户点了停止（restartSeq 被公开
-  //   stop() 递增）则放弃拉起，避免「停了又自己活过来」
-  // ---------------------------------------------------------------------------
-
-  async restart(cfg: Config): Promise<void> {
-    const seq = ++this.restartSeq;
-    if (this.state === ServerState.Running || this.state === ServerState.Starting) {
-      await this.doStop();
-    }
-    if (seq !== this.restartSeq) return;
-    this.start(cfg);
-  }
-
-  // ---------------------------------------------------------------------------
-  // isRunning — 检查进程是否存活
-  // ---------------------------------------------------------------------------
-
-  isRunning(): boolean {
-    if (!this.process || this.state !== ServerState.Running) {
-      return false;
-    }
-    // 通过 PID 检查进程是否真实存在
-    try {
-      process.kill(this.process.pid!, 0);
-      return true;
-    } catch {
-      return false;
-    }
+    await this.rpcKill;
   }
 
   // ---------------------------------------------------------------------------
@@ -558,6 +510,7 @@ export class LlamaServerManager extends EventEmitter {
   async destroy(): Promise<void> {
     await this.stop();
     this.stopRpcServer();
+    await this.rpcKill;
     if (this.logWorker) {
       this.logWorker.terminate();
       this.logWorker = null;
@@ -618,11 +571,6 @@ export class LlamaServerManager extends EventEmitter {
   private pushLogLine(line: string): void {
     this.storeLogLine(line);
     this.emit('log', line);
-  }
-
-  private resolveExecutablePath(): string {
-    // core/ 与 exe 同基目录（见 paths.getAppBaseDir 的开发/打包路径规则）
-    return getServerExePath();
   }
 }
 

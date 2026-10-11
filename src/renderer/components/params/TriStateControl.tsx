@@ -22,7 +22,6 @@ interface TriStateControlProps {
   tooltip: string;
   span: number;
   showToggle: boolean;
-  disabled?: boolean;
   showDesc?: boolean;
   onToggleInherit: () => void;
   onReset: () => void;
@@ -36,7 +35,6 @@ export default function TriStateControl({
   tooltip,
   span,
   showToggle,
-  disabled = false,
   showDesc = false,
   onToggleInherit,
   onReset,
@@ -59,7 +57,6 @@ export default function TriStateControl({
           <button
             type="button"
             onClick={onToggleInherit}
-            disabled={disabled}
             title={inherit ? '当前不发射该参数，点击改为显式设置' : '点击恢复为不发射（跟随 llama-server 默认）'}
             className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
               inherit
@@ -74,7 +71,6 @@ export default function TriStateControl({
           <button
             type="button"
             onClick={onReset}
-            disabled={disabled}
             title="恢复为启动器默认值"
             className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-gray-700 text-gray-500 hover:text-gray-200 hover:border-gray-500 transition-colors"
           >

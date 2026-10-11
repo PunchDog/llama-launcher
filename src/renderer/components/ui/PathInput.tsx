@@ -9,8 +9,9 @@ interface PathInputProps {
   value: string;
   onChange: (v: string) => void;
   onPick: () => void;
+  /** 提供时追加第二个按钮：选择文件夹（pathKind='auto' 的字段用） */
+  onPickFolder?: () => void;
   placeholder?: string;
-  readOnly?: boolean;
   disabled?: boolean;
   title?: string;
 }
@@ -19,8 +20,8 @@ export default function PathInput({
   value,
   onChange,
   onPick,
+  onPickFolder,
   placeholder,
-  readOnly = false,
   disabled = false,
   title,
 }: PathInputProps) {
@@ -30,7 +31,6 @@ export default function PathInput({
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        readOnly={readOnly}
         disabled={disabled}
         placeholder={placeholder}
         title={title ?? value}
@@ -39,6 +39,17 @@ export default function PathInput({
       <button type="button" onClick={onPick} disabled={disabled} className={`${btnSecondary} py-1`}>
         ...
       </button>
+      {onPickFolder && (
+        <button
+          type="button"
+          onClick={onPickFolder}
+          disabled={disabled}
+          title="选择文件夹"
+          className={`${btnSecondary} py-1`}
+        >
+          目录
+        </button>
+      )}
     </div>
   );
 }

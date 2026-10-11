@@ -6,6 +6,7 @@
 // =============================================================================
 
 import axios from 'axios';
+import { errMsg } from '../shared/errors';
 
 export interface AxiosProxyConfig {
   host: string;
@@ -121,7 +122,7 @@ export async function ghFetch<T>(url: string, proxy: AxiosProxyConfig | false): 
       const resp = await axios.get<T>(url, { headers, timeout: 30000, proxy, validateStatus: () => true });
       return { status: resp.status, headers: resp.headers as Record<string, unknown>, data: resp.data };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errMsg(err);
       throw new Error(`请求 GitHub API 失败 (${url}): ${msg}`, { cause: err });
     }
   };

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { inputBase, btnGhost } from './styles';
+import { errMsg } from '@/shared/errors';
 
 // =============================================================================
 // JsonEditor — JSON 字符串参数编辑器（--chat-template-kwargs / --json-schema）
@@ -44,7 +45,7 @@ export default function JsonEditor({
       JSON.parse(trimmed);
       return null;
     } catch (err) {
-      return err instanceof Error ? err.message : String(err);
+      return errMsg(err);
     }
   };
 

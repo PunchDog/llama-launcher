@@ -3,7 +3,7 @@ import { useUpdater } from '../hooks/useUpdater';
 import { useConfig } from '../hooks/useConfig';
 import { effectiveProxy } from '@/shared/proxy';
 import VersionCompare from './VersionCompare';
-import { Section, TextInput, SelectInput, Switch, Button } from './ui';
+import { Section, TextInput, SelectInput, Switch, Button, ProgressBar } from './ui';
 import { formatSize, formatSpeed } from '../utils/format';
 
 const BACKEND_OPTIONS = [
@@ -142,7 +142,7 @@ export default function CoreManager() {
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* 可滚动内容区 */}
-      <div className="flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-thin">
+      <div className="flex-1 overflow-y-auto space-y-3 pr-1">
         {/* 版本对比 */}
         <VersionCompare exists={exists} localVer={localVer} latestTag={latestTag} latestReleaseTag={latestReleaseTag} />
 
@@ -217,12 +217,7 @@ export default function CoreManager() {
         {(isDownloading || updater.error || error) && (
           <Section title="下载进度">
             <div className="mb-2">
-              <div className="w-full bg-gray-700 rounded-full h-2">
-                <div
-                  className="bg-blue-500 h-2 rounded-full transition-all duration-300"
-                  style={{ width: `${Math.min(updater.progress, 100)}%` }}
-                />
-              </div>
+              <ProgressBar progress={updater.progress} />
               <div className="flex justify-between items-center mt-1">
                 <span className="text-xs text-gray-400">
                   {formatSize(updater.downloadedBytes)} / {formatSize(updater.downloadSize)}

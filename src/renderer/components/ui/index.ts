@@ -10,5 +10,6 @@ export { default as Modal } from './Modal';
 export { default as JsonEditor } from './JsonEditor';
 export { default as CopyButton } from './CopyButton';
 export { default as SearchInput } from './SearchInput';
+export { default as ProgressBar } from './ProgressBar';
 export { default as ToastViewport } from './ToastViewport';
 export * from './styles';

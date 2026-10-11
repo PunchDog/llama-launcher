@@ -37,7 +37,7 @@ export default function BasicConfig() {
 
   return (
     <div className="flex flex-col overflow-hidden h-full">
-      <div className="flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-thin">
+      <div className="flex-1 overflow-y-auto space-y-3 pr-1">
         <PresetSection config={config} />
         <ParamToolbar groups={BASIC_GROUPS} />
 

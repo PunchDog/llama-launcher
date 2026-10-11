@@ -8,6 +8,7 @@ import { create } from 'zustand';
 import type { UpdaterState } from '@/shared/types';
 import { invoke } from '@/renderer/hooks/api';
 import { showToast } from './uiStore';
+import { errMsg } from '@/shared/errors';
 
 export interface LatestRelease {
   tag: string;
@@ -29,7 +30,6 @@ interface UpdaterStore {
   refresh: () => Promise<void>;
   setProxy: (proxy: string) => Promise<void>;
   setBackend: (backend: string) => Promise<void>;
-  clearError: () => void;
 }
 
 const IDLE_STATE: UpdaterState = {
@@ -48,7 +48,9 @@ const IDLE_STATE: UpdaterState = {
   selectedBackend: 'vulkan',
 };
 
-let localVersion: Promise<string> | null = null;
+/** 只做「同一时刻并发去重」（StrictMode 双跑只发一次 IPC），不做长期缓存：
+ *  core 可被更新或被用户外部替换，每次查询都必须重新探测真实版本 */
+let inflight: Promise<string> | null = null;
 
 export const useUpdaterStore = create<UpdaterStore>((set, get) => ({
   updater: IDLE_STATE,
@@ -74,7 +76,7 @@ export const useUpdaterStore = create<UpdaterStore>((set, get) => ({
       });
       return result;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errMsg(err);
       set({ error: msg, updater: { ...get().updater, status: `检查失败: ${msg}`, error: msg } });
       return null;
     }
@@ -84,21 +86,24 @@ export const useUpdaterStore = create<UpdaterStore>((set, get) => ({
     try {
       return await invoke('updater:check-core-exists');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errMsg(err);
       set({ error: msg });
       return false;
     }
   },
 
   getLocalVersion: () => {
-    // 本地 core 版本在一次会话内不变：缓存住，免得 StrictMode 双跑向主进程重复请求
-    //（该通道每次调用都会往日志里写一行「本地版本:」）
-    localVersion ??= invoke('updater:get-local-version').catch((err: unknown) => {
-      localVersion = null; // 失败不缓存，允许下次重试
-      set({ error: err instanceof Error ? err.message : String(err) });
-      return '';
-    });
-    return localVersion;
+    if (!inflight) {
+      const p = invoke('updater:get-local-version').catch((err: unknown) => {
+        set({ error: errMsg(err) });
+        return '';
+      });
+      inflight = p;
+      void p.finally(() => {
+        if (inflight === p) inflight = null;
+      });
+    }
+    return inflight;
   },
 
   downloadAndExtract: async () => {
@@ -108,7 +113,7 @@ export const useUpdaterStore = create<UpdaterStore>((set, get) => ({
       set({ updater: { ...get().updater, isDownloading: false, status: '下载完成', progress: 100 } });
       showToast('success', 'Core 下载并解压完成');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errMsg(err);
       set({ error: msg, updater: { ...get().updater, isDownloading: false, status: `下载失败: ${msg}`, error: msg } });
       showToast('error', `Core 下载失败：${msg}`);
       throw err;
@@ -121,7 +126,7 @@ export const useUpdaterStore = create<UpdaterStore>((set, get) => ({
       await invoke('updater:extract-specific', { filename });
       set({ updater: { ...get().updater, status: `解压完成: ${filename}` } });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errMsg(err);
       set({ error: msg, updater: { ...get().updater, status: `解压失败: ${msg}`, error: msg } });
       throw err;
     }
@@ -131,7 +136,7 @@ export const useUpdaterStore = create<UpdaterStore>((set, get) => ({
     try {
       return await invoke('updater:list-downloaded-files');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errMsg(err);
       set({ error: msg });
       return [];
     }
@@ -152,6 +157,4 @@ export const useUpdaterStore = create<UpdaterStore>((set, get) => ({
   setBackend: async (backend) => {
     set({ updater: await invoke('updater:set-backend', { backend }) });
   },
-
-  clearError: () => set({ error: null, updater: { ...get().updater, error: '' } }),
 }));

@@ -7,6 +7,9 @@ import { logLines, useLogsStore } from '../stores/logsStore';
 //   不再像旧的 useServer 那样每个订阅者各自持有一份 5000 行副本。
 // =============================================================================
 
+/** 拼接进 textarea 的最大行数：全量 5000 行每次合批都重排 textarea，只渲染尾部 */
+const TAIL_LINES = 1500;
+
 export default function LogViewer() {
   const seq = useLogsStore((s) => s.seq);
   const clear = useLogsStore((s) => s.clear);
@@ -15,7 +18,8 @@ export default function LogViewer() {
   const { text, count } = useMemo(
     () => {
       const lines = logLines();
-      return { text: lines.join('\n'), count: lines.length };
+      const view = lines.length > TAIL_LINES ? lines.slice(-TAIL_LINES) : lines;
+      return { text: view.join('\n'), count: lines.length };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [seq],

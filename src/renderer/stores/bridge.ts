@@ -8,6 +8,7 @@
 // =============================================================================
 
 import { invoke, on } from '@/renderer/hooks/api';
+import { ServerState } from '@/shared/types';
 import { useConfigStore } from './configStore';
 import { useServerStore } from './serverStore';
 import { useLogsStore } from './logsStore';
@@ -16,6 +17,9 @@ import { useDownloaderStore } from './downloaderStore';
 
 /** 状态兜底校准周期 */
 const HEARTBEAT_MS = 5000;
+/** 稳态时心跳降频：每 N 个 5s tick 才真正拉一次状态（启停转换期不降频） */
+const STEADY_TICK_DIVISOR = 6;
+let tick = 0;
 /** 日志合批窗口：一窗口内的多行只触发一次重渲染 */
 const LOG_FLUSH_MS = 50;
 /** 超过此行数立即落库，避免窗口隐藏时 pending 无限增长 */
@@ -69,6 +73,13 @@ export function startBridge(): void {
     .catch((err: unknown) => console.error('[bridge] 拉取历史日志失败:', err));
 
   setInterval(() => {
-    void useServerStore.getState().refresh();
+    // 启停转换期（推送可能落在事件间隙）每 5s 校准一次；
+    // 稳态下状态只由 server:state-changed 推送驱动，降到每 30s 兜底漂移
+    const s = useServerStore.getState();
+    const transitional =
+      s.busy || s.state === ServerState.Starting || s.state === ServerState.Stopping;
+    tick++;
+    if (!transitional && tick % STEADY_TICK_DIVISOR !== 0) return;
+    void s.refresh();
   }, HEARTBEAT_MS);
 }

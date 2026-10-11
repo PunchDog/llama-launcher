@@ -1,7 +1,7 @@
 import { inputBase, monoInput } from './styles';
 
 // =============================================================================
-// TextInput — 文本输入（支持等宽字体、只读展示）
+// TextInput — 文本输入（支持等宽字体）
 // =============================================================================
 
 interface TextInputProps {
@@ -11,7 +11,6 @@ interface TextInputProps {
   mono?: boolean;
   /** 密钥输入：圆点显示，避免旁人看到 API Key */
   password?: boolean;
-  readOnly?: boolean;
   disabled?: boolean;
   title?: string;
   /** 失焦回调（如代理地址保存） */
@@ -24,7 +23,6 @@ export default function TextInput({
   placeholder,
   mono = false,
   password = false,
-  readOnly = false,
   disabled = false,
   title,
   onBlur,
@@ -36,7 +34,7 @@ export default function TextInput({
       onChange={(e) => onChange(e.target.value)}
       onBlur={onBlur}
       placeholder={placeholder}
-      readOnly={readOnly}
+     
       disabled={disabled}
       title={title}
       className={mono ? monoInput : inputBase}

@@ -21,8 +21,3 @@ export function defaultOf(key: string): unknown {
 export function isDeviated(config: unknown, key: string): boolean {
   return !sameTri(getPath(config, key), defaultOf(key));
 }
-
-/** 当前配置里所有偏离默认的 key（用于「已改 N 项」统计与过滤） */
-export function deviatedKeys(config: unknown, keys: readonly string[]): string[] {
-  return keys.filter((key) => isDeviated(config, key));
-}

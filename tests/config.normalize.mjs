@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import os from 'node:os';
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -153,7 +154,10 @@ test('预设的每个改动键都被参数表认识，且类型匹配', () => {
 // ---------------------------------------------------------------------------
 
 test('模型目录与模型文件都没设置时给出 error 级问题，字段为点路径', () => {
-  const issues = validateParams(defaultConfig());
+  // defaultConfig 会为新装播种 ~/models，这里显式清回 inherit 还原「两者都缺」场景
+  const cfg = defaultConfig();
+  cfg.server.models_dir = '';
+  const issues = validateParams(cfg);
   const dir = issues.find((i) => i.field === 'server.models_dir');
   assert.ok(dir, '两者都缺时应报出没有可加载模型');
   assert.equal(dir.severity, 'error');
@@ -162,15 +166,85 @@ test('模型目录与模型文件都没设置时给出 error 级问题，字段�
 
 test('只设置模型文件（router 目录留空）不算错误', () => {
   const cfg = defaultConfig();
-  cfg.model.model = 'D:\\models\\qwen3-vl.gguf';
+  cfg.server.models_dir = '';
+  cfg.model.model = '/tmp/models/qwen3-vl.gguf';
   const issues = validateParams(cfg);
   assert.equal(issues.find((i) => i.field === 'server.models_dir'), undefined);
   assert.equal(hasErrors(issues), false);
 });
 
+test('model.model 填成目录 → 自动路由到 server.models_dir（router 模式）', () => {
+  const cfg = defaultConfig();
+  cfg.server.models_dir = '';
+  cfg.model.model = os.tmpdir();
+  const out = normalizeConfig(cfg);
+  assert.equal(out.server.models_dir, os.tmpdir());
+  assert.ok(!out.model.model, '目录值不应留在 model.model');
+});
+
+test('models_dir 填成单文件 → 自动路由到 model.model（单模型模式）', () => {
+  const fixture = path.join(root, 'tests', 'fixtures', 'current.v1.json');
+  const cfg = defaultConfig();
+  cfg.model.model = null;
+  cfg.server.models_dir = fixture;
+  const out = normalizeConfig(cfg);
+  assert.equal(out.model.model, fixture);
+  assert.ok(!out.server.models_dir, '文件值不应留在 server.models_dir');
+});
+
+test('路径不存在时两个字段都保持原样，交给启动前校验', () => {
+  const cfg = defaultConfig();
+  cfg.server.models_dir = '';
+  cfg.model.model = path.join(os.tmpdir(), 'llama-launcher-no-such-path');
+  const out = normalizeConfig(cfg);
+  assert.equal(out.model.model, path.join(os.tmpdir(), 'llama-launcher-no-such-path'));
+  assert.ok(!out.server.models_dir);
+});
+
+test('models_dir 只是默认播种且不存在时，model.model 的目录值照样接管', () => {
+  const cfg = defaultConfig();
+  cfg.server.models_dir = path.join(os.tmpdir(), 'llama-launcher-unseeded-dir');
+  cfg.model.model = os.tmpdir();
+  const out = normalizeConfig(cfg);
+  assert.equal(out.server.models_dir, os.tmpdir());
+  assert.ok(!out.model.model);
+});
+
+test('models_dir 是文件且 model.model 已设置 → 清空 models_dir，不发射非法 --models-dir', () => {
+  const fixture = path.join(root, 'tests', 'fixtures', 'current.v1.json');
+  const cfg = defaultConfig();
+  cfg.model.model = '/tmp/models/main.gguf';
+  cfg.server.models_dir = fixture;
+  const out = normalizeConfig(cfg);
+  assert.equal(out.model.model, '/tmp/models/main.gguf');
+  assert.ok(!out.server.models_dir, '文件值绝不能留在 models_dir 被发射为 --models-dir');
+});
+
+test('model.model 与 models_dir 都是目录 → 保留 router 模式，清空 model.model', () => {
+  const cfg = defaultConfig();
+  cfg.model.model = os.tmpdir();
+  cfg.server.models_dir = os.tmpdir();
+  const out = normalizeConfig(cfg);
+  assert.equal(out.server.models_dir, os.tmpdir());
+  assert.ok(!out.model.model);
+});
+
+test('跨平台路径：POSIX 系统上的 Windows 风格路径给 error 级校验问题', () => {
+  const cfg = defaultConfig();
+  cfg.server.models_dir = '/tmp/models';
+  cfg.speculative.draft_model = 'D:\\models\\draft.gguf';
+  const issues = validateParams(cfg);
+  const draft = issues.find(
+    (i) => i.field === 'speculative.draft_model' && i.severity === 'error',
+  );
+  assert.ok(draft, 'Windows 草稿模型路径应被拦截');
+  assert.equal(draft.severity, 'error');
+  assert.equal(hasErrors(issues), true);
+});
+
 test('预测长度超过上下文只给 warning，不阻断启动', () => {
   const cfg = defaultConfig();
-  cfg.server.models_dir = 'D:\\models';
+  cfg.server.models_dir = '/tmp/models';
   cfg.model.ctx_size = 4096;
   cfg.model.n_predict = 999999;
   const issues = validateParams(cfg);
@@ -182,7 +256,7 @@ test('预测长度超过上下文只给 warning，不阻断启动', () => {
 
 test('非法枚举与越界数值按 error 拦截，inherit 一律放行', () => {
   const cfg = defaultConfig();
-  cfg.server.models_dir = 'D:\\models';
+  cfg.server.models_dir = '/tmp/models';
   cfg.server.port = 99999;
   cfg.model.flash_attn = 'sometimes';
   cfg.memory.cache_type_k = null;
@@ -194,7 +268,7 @@ test('非法枚举与越界数值按 error 拦截，inherit 一律放行', () =>
 
 test('草稿模型缺失按条件必填拦截；ngram 方式不要求草稿模型', () => {
   const cfg = defaultConfig();
-  cfg.server.models_dir = 'D:\\models';
+  cfg.server.models_dir = '/tmp/models';
   cfg.speculative.spec_type = 'draft-eagle3';
   assert.ok(
     validateParams(cfg).some((i) => i.field === 'speculative.draft_model' && i.severity === 'error'),
@@ -208,7 +282,7 @@ test('草稿模型缺失按条件必填拦截；ngram 方式不要求草稿模�
 
 test('启用本机 rpc-server 却填 0 端口按 error 拦截', () => {
   const cfg = defaultConfig();
-  cfg.server.models_dir = 'D:\\models';
+  cfg.server.models_dir = '/tmp/models';
   cfg.rpc.server.enabled = true;
   cfg.rpc.server.port = 0;
   const issues = validateParams(cfg);

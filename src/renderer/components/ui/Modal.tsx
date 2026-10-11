@@ -11,21 +11,14 @@ interface ModalProps {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
-  /** 内容最大宽度类（Tailwind 需静态类名） */
-  size?: 'md' | '3xl';
   /** 底部操作区，null 时不渲染 */
   footer?: React.ReactNode;
 }
 
-const SIZE_CLASS: Record<NonNullable<ModalProps['size']>, string> = {
-  md: 'max-w-md',
-  '3xl': 'max-w-3xl',
-};
-
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])';
 
-export default function Modal({ open, title, onClose, children, size = '3xl', footer }: ModalProps) {
+export default function Modal({ open, title, onClose, children, footer }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   // onClose 每次渲染都是新函数时不应重跑订阅逻辑（会闪一下焦点），故走 ref
   const closeRef = useRef(onClose);
@@ -82,7 +75,7 @@ export default function Modal({ open, title, onClose, children, size = '3xl', fo
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-6 w-full mx-4 ${SIZE_CLASS[size]}`}
+        className={`bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-6 w-full mx-4 max-w-3xl`}
       >
         <div className="flex items-start justify-between gap-4 mb-3">
           <h3 className="text-sm font-semibold text-gray-300">{title}</h3>

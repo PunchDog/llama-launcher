@@ -10,6 +10,19 @@ export function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+/** 与 formatSize 同规则，但 0/缺失显示为 '-'（文件清单里 size 未知时用） */
+export function formatSizeDash(bytes: number): string {
+  return bytes ? formatSize(bytes) : '-';
+}
+
+/** 下载量/热度计数：1.2M / 34.5K */
+export function formatCount(n?: number): string {
+  if (n === undefined) return '';
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return String(n);
+}
+
 /** 动态格式化速度（入参 KB/s）：根据数值大小自动切换 B/s, KB/s, MB/s, GB/s */
 export function formatSpeed(kbps: number): string {
   if (kbps <= 0) return '0 B/s';

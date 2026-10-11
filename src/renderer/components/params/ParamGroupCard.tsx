@@ -23,7 +23,6 @@ interface ParamGroupCardProps {
   /** 栅格列数 */
   columns?: 2 | 4;
   /** 只渲染这些点路径（如 RPC 页只要 rpc.endpoints） */
-  only?: readonly string[];
   /** 覆盖全局层级（少数页面需要固定展示到某个层级） */
   maxTier?: 0 | 1 | 2;
 }
@@ -48,7 +47,6 @@ export default function ParamGroupCard({
   defaultOpen = true,
   showDesc = false,
   columns = 2,
-  only,
   maxTier: maxTierOverride,
 }: ParamGroupCardProps) {
   const tierPref = useUIStore((s) => s.maxTier);
@@ -68,7 +66,6 @@ export default function ParamGroupCard({
       .filter(
         (def) =>
           def.tier <= maxTier &&
-          (only ? only.includes(def.key) : true) &&
           paramVisible(def, flat) &&
           (!onlyChanged || isDeviated(cfg, def.key)) &&
           (query === '' || matchesSearch(def, query)),

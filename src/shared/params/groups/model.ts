@@ -17,7 +17,8 @@ export const PARAMS_MODEL = [
     tier: 0,
     group: 'model',
     label: '模型文件',
-    desc: '单模型模式启动时加载的 GGUF 路径；用 --models-dir 做路由模式时可以不填',
+    desc: '单模型模式启动时加载的 GGUF 路径；也可直接选择文件夹，会自动改用 --models-dir 路由模式',
+    pathKind: 'auto',
     legacy: { path: 'optional.model', emits: (v) => Boolean(v) },
   },
   {

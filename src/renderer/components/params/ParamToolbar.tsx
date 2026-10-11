@@ -25,10 +25,9 @@ const TIER_CLASS_IDLE = 'text-gray-400 hover:bg-gray-700 hover:text-gray-200';
 interface ParamToolbarProps {
   /** 本页面渲染的参数组；统计总数时只数这些组 */
   groups?: readonly ParamGroupId[];
-  showSearch?: boolean;
 }
 
-export default function ParamToolbar({ groups, showSearch = true }: ParamToolbarProps) {
+export default function ParamToolbar({ groups }: ParamToolbarProps) {
   const maxTier = useUIStore((s) => s.maxTier);
   const onlyChanged = useUIStore((s) => s.onlyChanged);
   const search = useUIStore((s) => s.search);
@@ -71,11 +70,9 @@ export default function ParamToolbar({ groups, showSearch = true }: ParamToolbar
 
       <span className="text-[10px] text-gray-500">当前层级 {total} 项</span>
 
-      {showSearch && (
-        <div className="ml-auto w-56">
-          <SearchInput value={search} onChange={setSearch} placeholder="搜索参数名 / 说明 / 命令行" />
-        </div>
-      )}
+      <div className="ml-auto w-56">
+        <SearchInput value={search} onChange={setSearch} placeholder="搜索参数名 / 说明 / 命令行" />
+      </div>
     </div>
   );
 }

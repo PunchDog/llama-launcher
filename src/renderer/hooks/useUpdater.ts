@@ -14,10 +14,8 @@ interface UseUpdaterReturn {
   downloadAndExtract: () => Promise<void>;
   extractSpecific: (filename: string) => Promise<void>;
   listDownloadedFiles: () => Promise<string[]>;
-  refreshProgress: () => Promise<void>;
   setProxy: (proxy: string) => Promise<void>;
   setBackend: (backend: string) => Promise<void>;
-  clearError: () => void;
 }
 
 export function useUpdater(): UseUpdaterReturn {
@@ -29,10 +27,8 @@ export function useUpdater(): UseUpdaterReturn {
   const downloadAndExtract = useUpdaterStore((s) => s.downloadAndExtract);
   const extractSpecific = useUpdaterStore((s) => s.extractSpecific);
   const listDownloadedFiles = useUpdaterStore((s) => s.listDownloadedFiles);
-  const refresh = useUpdaterStore((s) => s.refresh);
   const setProxy = useUpdaterStore((s) => s.setProxy);
   const setBackend = useUpdaterStore((s) => s.setBackend);
-  const clearError = useUpdaterStore((s) => s.clearError);
 
   return {
     updater,
@@ -43,9 +39,7 @@ export function useUpdater(): UseUpdaterReturn {
     downloadAndExtract,
     extractSpecific,
     listDownloadedFiles,
-    refreshProgress: refresh,
     setProxy,
     setBackend,
-    clearError,
   };
 }

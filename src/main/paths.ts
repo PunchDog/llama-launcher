@@ -80,8 +80,9 @@ export function getAppBaseDir(): string {
  * 开发模式 cwd），逐一探测，取第一个真正包含 llama-server 二进制的目录，
  * 避免「装了却找不到」；全部落空时用基目录下的 core/ 作为写入位置。
  */
-function llamaServerName(): string {
-  return process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
+/** Windows 补 .exe 后缀，其余平台原样返回 */
+export function exeName(base: string): string {
+  return process.platform === 'win32' ? `${base}.exe` : base;
 }
 
 let cachedCoreDir: string | null = null;
@@ -110,7 +111,7 @@ export function getCoreDir(): string {
     if (seen.has(dir)) continue;
     seen.add(dir);
     try {
-      if (fs.existsSync(path.join(dir, llamaServerName()))) {
+      if (fs.existsSync(path.join(dir, exeName('llama-server')))) {
         cachedCoreDir = dir;
         return dir;
       }
@@ -140,6 +141,5 @@ export function getConfigPath(): string {
  * 获取 llama-server.exe 完整路径
  */
 export function getServerExePath(): string {
-  const ext = process.platform === 'win32' ? '.exe' : '';
-  return path.join(getCoreDir(), `llama-server${ext}`);
+  return path.join(getCoreDir(), exeName('llama-server'));
 }

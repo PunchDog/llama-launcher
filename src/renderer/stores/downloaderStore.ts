@@ -9,6 +9,7 @@ import { create } from 'zustand';
 import type { ModelDownloadState, ModelFile, ModelInfo, ModelScopeEnvState } from '@/shared/types';
 import { invoke } from '@/renderer/hooks/api';
 import { showToast } from './uiStore';
+import { errMsg } from '@/shared/errors';
 
 interface DownloadRequest {
   modelId: string;
@@ -22,7 +23,6 @@ interface DownloaderStore {
   env: ModelScopeEnvState | null;
   models: ModelInfo[];
   error: string | null;
-  searching: boolean;
   /** modelId → 文件清单 */
   filesByModel: Record<string, ModelFile[]>;
   /** modelId → 勾选的文件路径 */
@@ -37,13 +37,11 @@ interface DownloaderStore {
   searchModels: (keyword: string) => Promise<void>;
   listFiles: (modelId: string) => Promise<void>;
   toggleFile: (path: string, on: boolean) => void;
-  clearSelection: () => void;
   download: (req: DownloadRequest) => Promise<void>;
   cancel: () => Promise<void>;
   setProxy: (proxy: string) => Promise<void>;
   applyState: (state: ModelDownloadState) => void;
   refresh: () => Promise<void>;
-  clearError: () => void;
 }
 
 const IDLE_STATE: ModelDownloadState = {
@@ -68,7 +66,6 @@ export const useDownloaderStore = create<DownloaderStore>((set, get) => ({
   env: null,
   models: [],
   error: null,
-  searching: false,
   filesByModel: {},
   selectedByModel: {},
   browsed: '',
@@ -82,7 +79,7 @@ export const useDownloaderStore = create<DownloaderStore>((set, get) => ({
     try {
       set({ env: await invoke('model:check-env') });
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
+      set({ error: errMsg(err) });
     }
   },
 
@@ -92,20 +89,18 @@ export const useDownloaderStore = create<DownloaderStore>((set, get) => ({
       await invoke('model:install-modelscope');
       await get().checkEnv();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errMsg(err);
       set({ error: msg });
       showToast('error', `安装 modelscope 失败：${msg}`);
     }
   },
 
   searchModels: async (keyword) => {
-    set({ error: null, searching: true });
+    set({ error: null });
     try {
       set({ models: await invoke('model:search-models', { keyword }) });
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err), models: [] });
-    } finally {
-      set({ searching: false });
+      set({ error: errMsg(err), models: [] });
     }
   },
 
@@ -119,7 +114,7 @@ export const useDownloaderStore = create<DownloaderStore>((set, get) => ({
         selectedByModel: { ...get().selectedByModel, [modelId]: [] },
       });
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
+      set({ error: errMsg(err) });
     }
   },
 
@@ -128,11 +123,6 @@ export const useDownloaderStore = create<DownloaderStore>((set, get) => ({
     const cur = get().selectedByModel[modelId] ?? [];
     const next = on ? (cur.includes(path) ? cur : [...cur, path]) : cur.filter((p) => p !== path);
     set({ selectedByModel: { ...get().selectedByModel, [modelId]: next } });
-  },
-
-  clearSelection: () => {
-    const modelId = get().target;
-    set({ selectedByModel: { ...get().selectedByModel, [modelId]: [] } });
   },
 
   download: async (req) => {
@@ -154,7 +144,7 @@ export const useDownloaderStore = create<DownloaderStore>((set, get) => ({
       await invoke('model:download', req);
       showToast('success', '模型下载完成');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errMsg(err);
       set({ error: msg });
       showToast('error', `模型下载失败：${msg}`);
     } finally {
@@ -170,7 +160,7 @@ export const useDownloaderStore = create<DownloaderStore>((set, get) => ({
       await get().refresh();
       set({ state: { ...get().state, isDownloading: false } });
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
+      set({ error: errMsg(err) });
     }
   },
 
@@ -184,9 +174,5 @@ export const useDownloaderStore = create<DownloaderStore>((set, get) => ({
     } catch {
       // 下载器空闲时可能尚未初始化，静默
     }
-  },
-
-  clearError: () => {
-    set({ error: null, state: { ...get().state, error: '' } });
   },
 }));

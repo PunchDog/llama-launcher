@@ -6,6 +6,7 @@
 
 import type { ParamDef } from '../schema';
 import type { ConfigKey } from '../../types';
+import { errMsg } from '../../errors';
 
 export const PARAMS_REASONING = [
   {
@@ -97,7 +98,7 @@ export const PARAMS_REASONING = [
         if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return '模板附加参数必须是 JSON 对象';
         return null;
       } catch (err) {
-        return `模板附加参数不是合法 JSON 对象：${err instanceof Error ? err.message : String(err)}`;
+        return `模板附加参数不是合法 JSON 对象：${errMsg(err)}`;
       }
     },
     legacy: { path: 'optional.chatTemplateKwargs', emits: (v) => Boolean(v) },

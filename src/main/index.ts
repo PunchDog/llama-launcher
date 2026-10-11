@@ -3,6 +3,8 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { registerIpcHandlers } from './ipc-handlers';
 import { getServerManager } from './server';
+import { getModelDownloader } from './ipc/model.ipc';
+import { getCoreUpdater } from './ipc/updater.ipc';
 
 // =============================================================================
 // Electron 主入口 — 应用生命周期管理
@@ -179,6 +181,9 @@ let quitCleanupDone = false;
 app.on('before-quit', (event) => {
   if (quitCleanupDone) return;
   event.preventDefault();
+  // 先掐断下载/CLI 子进程（保留续传断点），再收 llama-server 进程树
+  getModelDownloader().abort();
+  getCoreUpdater().abort();
   const cleanup = getServerManager()
     .destroy()
     .catch((err: unknown) => console.error('[App] 退出前清理服务器失败:', err));

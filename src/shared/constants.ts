@@ -17,14 +17,7 @@ export const GITHUB_API_REPO_URL =
 export const GITHUB_API_URL = `${GITHUB_API_REPO_URL}/releases/latest`;
 
 // ---------------------------------------------------------------------------
-// 目录名
-// ---------------------------------------------------------------------------
-
-export const CORE_DIR_NAME = 'core';
-export const DOWNLOAD_DIR_NAME = 'downloads';
-
-// ---------------------------------------------------------------------------
-// 日志环形缓冲上限 — server.ts / log-worker.ts / 渲染层日志区共用单源
+// 日志环形缓冲上限
 // ---------------------------------------------------------------------------
 
 export const MAX_LOG_BUFFER = 5000;
@@ -65,19 +58,11 @@ export const ARCH_LABEL: string =
 
 export type GpuBackend = 'vulkan' | 'rocm';
 
-/** 可选的 GPU 后端列表 */
-export const BACKEND_OPTIONS: readonly GpuBackend[] = ['vulkan', 'rocm'] as const;
-
 /** 后端 → 显示名称 */
 export const BACKEND_LABEL_MAP: Record<GpuBackend, string> = {
   vulkan: 'Vulkan',
   rocm: 'ROCm',
 };
-
-/** 检查指定后端在当前平台上是否可用 */
-export function isBackendAvailable(backend: GpuBackend, platform: string): boolean {
-  return getBackendKeyword(backend, platform) !== '';
-}
 
 /** OS + 后端 → 搜索关键词 */
 export function getBackendKeyword(backend: GpuBackend, platform: string): string {

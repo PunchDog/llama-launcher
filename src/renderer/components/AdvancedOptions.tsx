@@ -20,7 +20,7 @@ export default function AdvancedOptions() {
 
   return (
     <div className="flex flex-col overflow-hidden h-full">
-      <div className="flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-thin">
+      <div className="flex-1 overflow-y-auto space-y-3 pr-1">
         <Section
           title="参数层级"
           desc="层级越高越接近 llama-server 的原始参数面；不确定的参数保持「跟随默认」，让 --fit 等自适应机制继续生效"

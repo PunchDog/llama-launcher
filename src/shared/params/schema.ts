@@ -100,8 +100,10 @@ export interface ParamDef<K extends string = string> {
   unit?: string;
   /** 枚举候选值；'inherit' 由控件统一注入，不写在这里 */
   options?: readonly string[];
-  /** type='path' 时界面「浏览」按钮的对话框类型，缺省按文件处理 */
-  pathKind?: 'file' | 'dir';
+  /** type='path' 时界面「浏览」按钮的对话框类型，缺省按文件处理；
+   *  'auto' 同时提供「文件」与「目录」两个入口（目录值会在配置归一化时
+   *  自动路由到 server.models_dir） */
+  pathKind?: 'file' | 'dir' | 'auto';
   /** 仅影响界面控件选型，不参与发射与校验：'json' 用带解析校验的多行编辑器 */
   widget?: 'json';
   /** 依赖条件：不满足时既不发射，也会在校验时给出 warning */

@@ -19,6 +19,7 @@ import AdmZip from 'adm-zip';
 import tar from 'tar';
 import { safeJoin } from '../shared/fs-safe';
 import { is7zFile, isTargetBinary, noBinaryError } from './archive-shared';
+import { errMsg } from '../shared/errors';
 
 interface ExtractRequest {
   op: 'extract';
@@ -69,7 +70,7 @@ function extractZip(src: string, dst: string, onStatus: (msg: string) => void): 
           onStatus(`提取 ${baseName} 失败（第 ${attempt} 次），重试中...`);
           sleepSync(400);
         } else {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = errMsg(err);
           failed.push(`${baseName}: ${msg}`);
         }
       }
@@ -199,7 +200,7 @@ parentPort?.on('message', async (req: ExtractRequest) => {
     }
     post('done');
   } catch (err: unknown) {
-    post('error', { message: err instanceof Error ? err.message : String(err) });
+    post('error', { message: errMsg(err) });
   }
 });
 

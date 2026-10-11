@@ -446,14 +446,10 @@ export interface IpcChannelMap {
   'config:load': { response: Config };
   /** 保存后返回主进程归一化的配置，渲染层以它为准（未知键/类型不符的字段会被清掉） */
   'config:save': { request: Config; response: Config };
-  'config:update': { request: { key: string; value: unknown }; response: Config };
-  'config:validate': { request: Config; response: ConfigIssue[] };
   'server:start': { response: void };
   'server:stop': { response: void };
-  'server:restart': { response: void };
   'server:get-state': { response: ServerState };
   'server:get-logs': { response: string[] };
-  'server:get-command': { response: string };
   'server:preview-command': { request: Config; response: string };
   'server:on-log': { response: string };
   'server:state-changed': { response: ServerState };

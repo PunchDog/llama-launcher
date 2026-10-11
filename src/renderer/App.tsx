@@ -5,7 +5,7 @@ import BasicConfig from './components/BasicConfig';
 import AdvancedOptions from './components/AdvancedOptions';
 import RpcConfig from './components/RpcConfig';
 import CoreManager from './components/CoreManager';
-import ModelDownloader from './components/ModelDownloader';
+import ModelDownloader from './components/sections/model/ModelDownloader';
 
 const tabs = [
   { key: 'basic', label: '基础配置' },
@@ -15,8 +15,10 @@ const tabs = [
   { key: 'model', label: '模型下载' },
 ] as const;
 
+type TabKey = (typeof tabs)[number]['key'];
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<string>('basic');
+  const [activeTab, setActiveTab] = useState<TabKey>('basic');
 
   return (
     <div className="h-screen flex flex-col bg-gray-900 text-gray-100 select-none">

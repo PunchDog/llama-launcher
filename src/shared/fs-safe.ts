@@ -54,11 +54,6 @@ export function assertSafeArg(value: string, label = '参数'): string {
   return value;
 }
 
-/** 过滤出非空字符串数组，供 spawn 参数列表兜底使用 */
-export function normalizeCliArgs(args: readonly unknown[]): string[] {
-  return args.filter((a): a is string => typeof a === 'string' && a.length > 0);
-}
-
 /** 生成同目录唯一临时文件名（pid + 计数器 + 随机后缀防碰撞） */
 let tmpCounter = 0;
 function tmpPathFor(filePath: string): string {
@@ -81,25 +76,6 @@ export function writeFileAtomic(filePath: string, data: string | Uint8Array): vo
       fs.unlinkSync(tmp);
     } catch {
       // 临时文件可能未创建，忽略
-    }
-    throw err;
-  }
-}
-
-/** 原子写入（异步版），语义同 writeFileAtomic */
-export async function writeFileAtomicAsync(
-  filePath: string,
-  data: string | Uint8Array,
-): Promise<void> {
-  const tmp = tmpPathFor(filePath);
-  try {
-    await fs.promises.writeFile(tmp, data);
-    await fs.promises.rename(tmp, filePath);
-  } catch (err) {
-    try {
-      await fs.promises.unlink(tmp);
-    } catch {
-      // 忽略清理失败
     }
     throw err;
   }

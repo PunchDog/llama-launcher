@@ -1,9 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { Config, ConfigKey, ConfigPreset } from '../shared/types';
+import type { Config, ConfigPreset } from '../shared/types';
 import { DEFAULT_CONFIG, DEFAULT_PRESETS, CONFIG_VERSION } from '../shared/constants';
-import { ALL_PARAMS, PARAM_INDEX, getPath, setPath } from '../shared/params';
+import { ALL_PARAMS, PARAM_INDEX, getPath, setPath, isInherit } from '../shared/params';
 import type { AnyParamDef } from '../shared/params/schema';
 import { migrateV1ToV2 } from '../shared/params/migrate';
 import { writeFileAtomic } from '../shared/fs-safe';
@@ -21,13 +21,6 @@ import { getConfigPath } from './paths';
 
 let cachedConfig: Config | null = null;
 let backupDone = false;
-
-// ---------------------------------------------------------------------------
-// getConfigPath — 返回 config.json 的完整路径
-//   开发模式：{项目根}/config.json
-//   打包模式：{exeDir}/resources/config.json
-// ---------------------------------------------------------------------------
-export { getConfigPath };
 
 // ---------------------------------------------------------------------------
 // defaultConfig — 默认配置快照（深拷贝，可安全修改）
@@ -51,7 +44,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-/** 应用层字段（不参与命令行发射）也可经 config:update 修改 */
+/** 应用层字段（不参与命令行发射），normalizeConfig 逐键清洗用 */
 const APP_FIELDS: Readonly<Record<string, 'bool' | 'string' | 'int'>> = {
   'proxy.enabled': 'bool',
   'proxy.url': 'string',
@@ -122,6 +115,60 @@ function normalizePresets(raw: unknown): ConfigPreset[] {
   return out;
 }
 
+/**
+ * 模型路径跨字段路由（结构修复）：
+ *   model.model 填的是「已存在的目录」→ 迁移到 server.models_dir（router 模式），
+ *   server.models_dir 填的是「已存在的单文件」→ 迁移到 model.model（单模型模式）。
+ *   两个浏览入口都救不了手输/粘贴的场景，归一化层是唯一能自动区分类型的收口；
+ *   路径不存在或无权限时不动值，交给启动前校验报错。
+ */
+function routeModelPathKinds(cfg: Config): string[] {
+  const warnings: string[] = [];
+  const root = cfg as unknown as Record<string, unknown>;
+  const model = getPath(cfg, 'model.model');
+  const dir = getPath(cfg, 'server.models_dir');
+
+  const kindOf = (v: unknown): 'dir' | 'file' | null => {
+    if (typeof v !== 'string' || isInherit(v)) return null;
+    try {
+      const st = fs.statSync(v);
+      if (st.isDirectory()) return 'dir';
+      if (st.isFile()) return 'file';
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  const modelKind = kindOf(model);
+  const dirKind = kindOf(dir);
+
+  if (modelKind === 'dir') {
+    // 目录值永远不会是合法的 --model，必须离开 model.model；models_dir 只有
+    // 「确实存在的目录」才算被占用，未设置/默认播种的 ~/models 都让位
+    if (dirKind === 'dir') {
+      setPath(root, 'model.model', null);
+      warnings.push('model.model 是目录且 --models-dir 已指向目录，已清空 model.model（保留 router 模式）');
+    } else {
+      setPath(root, 'server.models_dir', model);
+      setPath(root, 'model.model', null);
+      warnings.push('model.model 是目录，已自动改用 router 模式（--models-dir）');
+    }
+  } else if (dirKind === 'file') {
+    // 文件值同理不能留在 models_dir，否则发射非法的 --models-dir <file>
+    if (isInherit(model)) {
+      setPath(root, 'model.model', dir);
+      setPath(root, 'server.models_dir', null);
+      warnings.push('server.models_dir 是单个模型文件，已自动改用单模型模式（--model）');
+    } else {
+      setPath(root, 'server.models_dir', null);
+      warnings.push('server.models_dir 是文件且 model.model 已指向模型，已清空 server.models_dir');
+    }
+  }
+
+  return warnings;
+}
+
 // ---------------------------------------------------------------------------
 // normalizeConfig — 白名单归一化：默认结构 + 逐键清洗
 // ---------------------------------------------------------------------------
@@ -149,6 +196,10 @@ export function normalizeConfig(raw: unknown): Config {
 
   // v1 迁移留下的未认领字段：原样保留供用户自查，不发射到命令行
   if (isPlainObject(raw.unknown_v1)) out.unknown_v1 = raw.unknown_v1;
+
+  for (const w of routeModelPathKinds(out)) {
+    console.warn(`[Config] ${w}`);
+  }
 
   return out;
 }
@@ -264,33 +315,6 @@ export function saveConfig(config: unknown): Config {
   persistConfig(cfg, getConfigPath());
   cachedConfig = cfg;
   return structuredClone(cfg);
-}
-
-// ---------------------------------------------------------------------------
-// updateConfigField — 点分隔路径更新单个字段
-//   示例: 'server.port', 'model.ctx_size', 'rpc.server.port'
-//   路径必须存在于参数表或应用层字段白名单里（原型键一律拒绝）
-// ---------------------------------------------------------------------------
-
-export function updateConfigField(key: ConfigKey | string, value: unknown): Config {
-  const config = getCachedConfig() ?? loadConfig();
-  const root = config as unknown as Record<string, unknown>;
-  const blocked = ['__proto__', 'constructor', 'prototype'];
-  if (!key || key.split('.').some((part) => blocked.includes(part))) {
-    throw new Error(`非法配置键: ${JSON.stringify(key)}`);
-  }
-
-  const def = PARAM_INDEX.get(key);
-  const appKind = APP_FIELDS[key];
-  if (!def && !appKind) throw new Error(`未知配置键: ${key}`);
-
-  const cleaned = def ? cleanParam(def, value) : cleanAppField(appKind as 'bool' | 'string' | 'int', value);
-  if (cleaned === undefined) {
-    const expected = def ? def.type : appKind;
-    throw new Error(`配置键 ${key} 类型不符：期望 ${expected}，收到 ${JSON.stringify(value)}`);
-  }
-  setPath(root, key, cleaned);
-  return saveConfig(config);
 }
 
 // ---------------------------------------------------------------------------

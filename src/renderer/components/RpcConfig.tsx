@@ -25,7 +25,7 @@ export default function RpcConfig() {
 
   return (
     <div className="flex flex-col overflow-hidden h-full">
-      <div className="flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-thin">
+      <div className="flex-1 overflow-y-auto space-y-3 pr-1">
         <Section
           title="本机 RPC Server"
           desc="在本机启动 ggml-rpc-server 暴露计算服务，llama-server 以 --rpc 客户端连接，实现跨进程/GPU 分布式推理"

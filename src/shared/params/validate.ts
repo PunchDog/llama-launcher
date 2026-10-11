@@ -54,6 +54,27 @@ function crossChecks(cfg: Config): ConfigIssue[] {
     issues.push({ field, message, severity });
   };
 
+  // 路径类参数跨平台守卫：从别的系统拷来的 config.json（如 Windows 的
+  // D:\models\...）在本机必然加载失败，llama-server 会直接以 code=1 退出，
+  // 这里升级为 error 阻断启动并给出可操作的提示
+  const isWin = process.platform === 'win32';
+  for (const def of ALL_PARAMS) {
+    if (def.type !== 'path') continue;
+    const value = getPath(cfg, def.key);
+    if (isInherit(value)) continue;
+    const items = Array.isArray(value) ? value : [value];
+    for (const raw of items) {
+      if (typeof raw !== 'string' || !raw) continue;
+      const winStyle = /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('\\\\');
+      const posixStyle = raw.startsWith('/');
+      if (isWin && posixStyle && !winStyle) {
+        push(def.key, `${def.label} 路径 "${raw}" 是 Linux/macOS 格式，Windows 下无法加载，请重新选择`, 'error');
+      } else if (!isWin && winStyle) {
+        push(def.key, `${def.label} 路径 "${raw}" 是 Windows 格式，当前系统下无法加载，请重新选择`, 'error');
+      }
+    }
+  }
+
   const ctx = getPath(cfg, 'model.ctx_size');
   const nPredict = getPath(cfg, 'model.n_predict');
   if (typeof ctx === 'number' && typeof nPredict === 'number' && nPredict > 0 && nPredict > ctx) {

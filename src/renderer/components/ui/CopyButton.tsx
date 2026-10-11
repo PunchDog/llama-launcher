@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { btnGhost } from './styles';
 import { showToast } from '@/renderer/stores/uiStore';
+import { errMsg } from '@/shared/errors';
 
 // =============================================================================
 // CopyButton — 复制按钮：成功变「已复制」并在 1.5s 后复原
@@ -47,7 +48,7 @@ export default function CopyButton({ text, label = '复制', className = '' }: C
             if (timer.current) clearTimeout(timer.current);
             timer.current = setTimeout(() => setCopied(false), 1500);
           },
-          (err: unknown) => showToast('error', `复制失败：${err instanceof Error ? err.message : String(err)}`),
+          (err: unknown) => showToast('error', `复制失败：${errMsg(err)}`),
         );
       }}
     >

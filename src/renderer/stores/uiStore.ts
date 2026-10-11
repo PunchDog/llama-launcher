@@ -20,11 +20,9 @@ const PREF_KEY = 'ui-prefs';
 interface UIPrefs {
   maxTier: 0 | 1 | 2;
   onlyChanged: boolean;
-  dockOpen: boolean;
-  dockHeight: number;
 }
 
-const DEFAULT_PREFS: UIPrefs = { maxTier: 0, onlyChanged: false, dockOpen: true, dockHeight: 40 };
+const DEFAULT_PREFS: UIPrefs = { maxTier: 0, onlyChanged: false };
 
 function loadPrefs(): UIPrefs {
   try {
@@ -34,8 +32,6 @@ function loadPrefs(): UIPrefs {
     return {
       maxTier: parsed.maxTier === 1 || parsed.maxTier === 2 ? parsed.maxTier : 0,
       onlyChanged: parsed.onlyChanged === true,
-      dockOpen: parsed.dockOpen !== false,
-      dockHeight: typeof parsed.dockHeight === 'number' ? Math.min(80, Math.max(15, parsed.dockHeight)) : 40,
     };
   } catch {
     return DEFAULT_PREFS;
@@ -51,16 +47,12 @@ function persistPrefs(s: UIPrefs): void {
 }
 
 interface UIStore extends UIPrefs {
-  page: string;
   /** 参数页搜索词（不持久化，切页语义上是新的一次浏览） */
   search: string;
   toasts: ToastItem[];
-  setPage: (page: string) => void;
   setSearch: (q: string) => void;
   setMaxTier: (tier: 0 | 1 | 2) => void;
   setOnlyChanged: (on: boolean) => void;
-  setDockOpen: (open: boolean) => void;
-  setDockHeight: (pct: number) => void;
   toast: (kind: ToastKind, text: string) => void;
   dismissToast: (id: number) => void;
 }
@@ -70,11 +62,9 @@ const TOAST_TTL_MS = 4000;
 
 export const useUIStore = create<UIStore>((set, get) => ({
   ...loadPrefs(),
-  page: 'overview',
   search: '',
   toasts: [],
 
-  setPage: (page) => set({ page }),
   setSearch: (search) => set({ search }),
 
   setMaxTier: (maxTier) => {
@@ -84,17 +74,6 @@ export const useUIStore = create<UIStore>((set, get) => ({
 
   setOnlyChanged: (onlyChanged) => {
     set({ onlyChanged });
-    persistPrefs(snapshotPrefs(get()));
-  },
-
-  setDockOpen: (dockOpen) => {
-    set({ dockOpen });
-    persistPrefs(snapshotPrefs(get()));
-  },
-
-  setDockHeight: (pct) => {
-    const dockHeight = Math.min(80, Math.max(15, Math.round(pct)));
-    set({ dockHeight });
     persistPrefs(snapshotPrefs(get()));
   },
 
@@ -113,7 +92,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
 }));
 
 function snapshotPrefs(s: UIStore): UIPrefs {
-  return { maxTier: s.maxTier, onlyChanged: s.onlyChanged, dockOpen: s.dockOpen, dockHeight: s.dockHeight };
+  return { maxTier: s.maxTier, onlyChanged: s.onlyChanged };
 }
 
 /** 供其他 store 报错用，避免它们反向 import 本文件的 hook 类型 */

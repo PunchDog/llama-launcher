@@ -10,8 +10,7 @@ import type { Config } from '@/shared/types';
 import { setDeep } from '@/shared/params';
 import { invoke } from '@/renderer/hooks/api';
 import { showToast } from './uiStore';
-
-export type PersistStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+import { errMsg } from '@/shared/errors';
 
 /** 连续输入（如逐字符敲路径）只落一次盘 */
 const SAVE_DEBOUNCE_MS = 250;
@@ -25,14 +24,9 @@ interface ConfigStore {
   lastSaved: Config | null;
   loading: boolean;
   error: string | null;
-  persistStatus: PersistStatus;
-  /** 与 lastSaved 不一致的参数点路径，用于「N 项未保存」提示 */
-  dirtyKeys: string[];
   load: () => Promise<void>;
   setParam: (key: string, value: unknown) => void;
   setParams: (patch: Record<string, unknown>) => void;
-  /** 整份替换并立即落盘（预设应用、外部导入） */
-  replace: (cfg: Config) => Promise<Config | null>;
   /** 立即把未保存的修改写盘；启动按钮调用，返回是否已确认落盘 */
   flushNow: () => Promise<boolean>;
 }
@@ -43,28 +37,6 @@ let revision = 0;
 
 function clone(cfg: Config): Config {
   return structuredClone(cfg);
-}
-
-/** 逐组对比出不同的点路径；顶层对象下钻一层，标量按整键比较 */
-function diffKeys(a: Config | null, b: Config | null): string[] {
-  if (!a || !b) return [];
-  const out: string[] = [];
-  const left = a as unknown as Record<string, unknown>;
-  const right = b as unknown as Record<string, unknown>;
-  for (const [group, value] of Object.entries(left)) {
-    const other = right[group];
-    if (value === other) continue;
-    if (typeof value !== 'object' || value === null || Array.isArray(value) || typeof other !== 'object' || other === null) {
-      if (JSON.stringify(value) !== JSON.stringify(other)) out.push(group);
-      continue;
-    }
-    const inner = value as Record<string, unknown>;
-    const innerOther = other as Record<string, unknown>;
-    for (const [field, v] of Object.entries(inner)) {
-      if (JSON.stringify(v) !== JSON.stringify(innerOther[field])) out.push(`${group}.${field}`);
-    }
-  }
-  return out;
 }
 
 function writeKey(cfg: Config, key: string, value: unknown): void {
@@ -80,21 +52,19 @@ export const useConfigStore = create<ConfigStore>((set, get) => {
     if (!start.config) return 'error';
     if (start.config === start.lastSaved) return 'clean';
     const revAtStart = revision;
-    set({ persistStatus: 'saving' });
     try {
       const saved = await invoke('config:save', start.config);
       if (revision !== revAtStart) {
         // 保存期间用户又改了：这份响应不含最新修改，丢弃并按最新本地值再存一轮
-        set({ persistStatus: 'pending' });
         schedulePersist();
         return 'stale';
       }
-      set({ config: saved, lastSaved: saved, dirtyKeys: [], persistStatus: 'saved', error: null });
+      set({ config: saved, lastSaved: saved, error: null });
       return 'saved';
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errMsg(err);
       const { lastSaved } = get();
-      set({ config: lastSaved, dirtyKeys: [], persistStatus: 'error', error: msg });
+      set({ config: lastSaved, error: msg });
       showToast('error', `配置保存失败，已回滚：${msg}`);
       return 'error';
     }
@@ -120,7 +90,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => {
 
   function applyLocal(next: Config): void {
     revision++;
-    set({ config: next, dirtyKeys: diffKeys(next, get().lastSaved), persistStatus: 'pending', error: null });
+    set({ config: next, error: null });
     schedulePersist();
   }
 
@@ -129,16 +99,14 @@ export const useConfigStore = create<ConfigStore>((set, get) => {
     lastSaved: null,
     loading: true,
     error: null,
-    persistStatus: 'idle',
-    dirtyKeys: [],
 
     load: async () => {
       set({ loading: true, error: null });
       try {
         const cfg = await invoke('config:load');
-        set({ config: cfg, lastSaved: cfg, dirtyKeys: [], loading: false, persistStatus: 'idle' });
+        set({ config: cfg, lastSaved: cfg, loading: false });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = errMsg(err);
         set({ loading: false, error: msg });
       }
     },
@@ -150,7 +118,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => {
       try {
         writeKey(next, key, value);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = errMsg(err);
         set({ error: msg });
         showToast('error', msg);
         return;
@@ -165,18 +133,12 @@ export const useConfigStore = create<ConfigStore>((set, get) => {
       try {
         for (const [key, value] of Object.entries(patch)) writeKey(next, key, value);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = errMsg(err);
         set({ error: msg });
         showToast('error', msg);
         return;
       }
       applyLocal(next);
-    },
-
-    replace: async (cfg) => {
-      revision++;
-      set({ config: cfg, dirtyKeys: diffKeys(cfg, get().lastSaved) });
-      return (await persistUntilSettled()) ? get().config : null;
     },
 
     flushNow: async () => {

@@ -17,7 +17,6 @@ interface ParamFieldProps {
   def: AnyParamDef;
   /** 是否显示 desc 说明文字（进阶/专家层级用） */
   showDesc?: boolean;
-  disabled?: boolean;
   span?: number;
 }
 
@@ -41,7 +40,7 @@ function seedValue(def: AnyParamDef): unknown {
   }
 }
 
-export default function ParamField({ def, showDesc = false, disabled = false, span = 1 }: ParamFieldProps) {
+export default function ParamField({ def, showDesc = false, span = 1 }: ParamFieldProps) {
   const { value, setValue, deviated, reset } = useParam(def.key);
   const { tooltip, inheritLabel } = useParamMeta(def);
   const inherit = isInherit(value);
@@ -58,7 +57,6 @@ export default function ParamField({ def, showDesc = false, disabled = false, sp
           value={inherit ? '' : value ? '1' : '0'}
           onChange={(v) => setValue(v === '' ? null : v === '1')}
           options={options}
-          disabled={disabled}
           title={tooltip}
         />
       );
@@ -74,7 +72,6 @@ export default function ParamField({ def, showDesc = false, disabled = false, sp
           value={inherit ? '' : String(value)}
           onChange={(v) => setValue(v === '' ? null : v)}
           options={options}
-          disabled={disabled}
           title={tooltip}
         />
       );
@@ -90,7 +87,6 @@ export default function ParamField({ def, showDesc = false, disabled = false, sp
           step={def.step ?? (def.precision && def.precision > 0 ? 0.01 : 1)}
           precision={def.precision}
           placeholder={inheritLabel}
-          disabled={disabled}
           title={tooltip}
           unit={def.unit}
         />
@@ -104,7 +100,6 @@ export default function ParamField({ def, showDesc = false, disabled = false, sp
         <textarea
           rows={3}
           value={list.join('\n')}
-          disabled={disabled}
           title={tooltip}
           placeholder={'每行一个命令行片段，按原样追加到末尾\n例如\n--parallel\n1'}
           onChange={(e) => setValue(e.target.value.split('\n').map((s) => s.trim()).filter(Boolean))}
@@ -118,7 +113,6 @@ export default function ParamField({ def, showDesc = false, disabled = false, sp
         <JsonEditor
           value={inherit ? '' : String(value)}
           onChange={(v) => setValue(v)}
-          disabled={disabled}
           title={tooltip}
         />
       );
@@ -132,25 +126,27 @@ export default function ParamField({ def, showDesc = false, disabled = false, sp
           onChange={(v) => setValue(v ? v.split(',').map((s) => s.trim()).filter(Boolean) : [])}
           placeholder={inheritLabel}
           mono
-          disabled={disabled}
           title={tooltip}
         />
       );
     }
 
     if (def.type === 'path') {
-      const pick = async () => {
-        const got =
-          def.pathKind === 'dir' ? await invoke('dialog:open-folder') : await invoke('dialog:open-file');
+      const pickFile = async () => {
+        const got = await invoke('dialog:open-file');
+        if (got) setValue(got);
+      };
+      const pickDir = async () => {
+        const got = await invoke('dialog:open-folder');
         if (got) setValue(got);
       };
       return (
         <PathInput
           value={inherit ? '' : String(value)}
           onChange={(v) => setValue(v)}
-          onPick={pick}
+          onPick={def.pathKind === 'dir' ? pickDir : pickFile}
+          onPickFolder={def.pathKind === 'auto' ? pickDir : undefined}
           placeholder={inheritLabel}
-          disabled={disabled}
           title={tooltip}
         />
       );
@@ -163,7 +159,6 @@ export default function ParamField({ def, showDesc = false, disabled = false, sp
         placeholder={inheritLabel}
         mono={def.type === 'secret'}
         password={def.type === 'secret'}
-        disabled={disabled}
         title={tooltip}
       />
     );
@@ -180,7 +175,6 @@ export default function ParamField({ def, showDesc = false, disabled = false, sp
       tooltip={tooltip}
       span={span}
       showToggle={showToggle}
-      disabled={disabled}
       showDesc={showDesc}
       onToggleInherit={() => setValue(inherit ? seedValue(def) : null)}
       onReset={reset}
